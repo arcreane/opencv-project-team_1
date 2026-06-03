@@ -4,7 +4,7 @@ from tkinter import filedialog, messagebox, ttk
 import cv2
 from PIL import Image, ImageTk
 
-from myeditor import processing
+from myeditor import processing, scanner
 
 
 RESAMPLE = getattr(Image, "Resampling", Image).LANCZOS
@@ -110,6 +110,80 @@ class FilterDialog:
         self.window.destroy()
 
 
+class ScanDialog:
+    ENHANCE_MODES = {"B&W": "bw", "Color": "color", "Gray": "gray"}
+
+    def __init__(self, editor):
+        self.editor = editor
+        self.enhance = tk.StringVar(value="B&W")
+        self.tk_preview = None
+
+        self.window = tk.Toplevel(editor.root)
+        self.window.title("Crop & Straighten")
+        self.window.resizable(False, False)
+        self.window.transient(editor.root)
+        self.window.protocol("WM_DELETE_WINDOW", self.cancel)
+
+        body = ttk.Frame(self.window, padding=12)
+        body.grid(row=0, column=0, sticky="nsew")
+        ttk.Label(
+            body,
+            text="Drag the green corners on the image to fit the document.",
+            wraplength=280,
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+
+        self.preview_label = ttk.Label(body)
+        self.preview_label.grid(row=1, column=0, columnspan=2, pady=4)
+
+        ttk.Label(body, text="Output").grid(row=2, column=0, sticky="w", pady=4)
+        ttk.OptionMenu(
+            body,
+            self.enhance,
+            "B&W",
+            *self.ENHANCE_MODES,
+            command=lambda _value: self.update_preview(),
+        ).grid(row=2, column=1, sticky="ew", pady=4)
+
+        buttons = ttk.Frame(body)
+        buttons.grid(row=3, column=0, columnspan=2, sticky="e", pady=(12, 0))
+        ttk.Button(buttons, text="Cancel", command=self.cancel).grid(row=0, column=0, padx=4)
+        ttk.Button(buttons, text="Apply", command=self.apply).grid(row=0, column=1, padx=4)
+
+        self.update_preview()
+
+    def enhance_mode(self):
+        return self.ENHANCE_MODES[self.enhance.get()]
+
+    def build_result(self):
+        warped = scanner.four_point_transform(self.editor.image, self.editor.scan_corners)
+        return scanner.enhance_scan(warped, mode=self.enhance_mode())
+
+    def update_preview(self):
+        try:
+            result = self.build_result()
+        except Exception as error:
+            self.editor.set_status(str(error))
+            return
+        rgb = cv2.cvtColor(result, cv2.COLOR_BGR2RGB)
+        pil_image = Image.fromarray(rgb)
+        pil_image.thumbnail((280, 280), RESAMPLE)
+        self.tk_preview = ImageTk.PhotoImage(pil_image)
+        self.preview_label.configure(image=self.tk_preview)
+
+    def apply(self):
+        try:
+            result = self.build_result()
+        except Exception as error:
+            messagebox.showerror("Crop & Straighten", str(error))
+            return
+        self.window.destroy()
+        self.editor.finish_scan(result)
+
+    def cancel(self):
+        self.window.destroy()
+        self.editor.cancel_scan()
+
+
 class ImageEditor:
     def __init__(self, root):
         self.root = root
@@ -130,6 +204,11 @@ class ImageEditor:
 
         self.point_tool = None
         self.points = []
+
+        self.scan_active = False
+        self.scan_corners = []
+        self.scan_drag_index = None
+        self.scan_dialog = None
 
         self.status_var = tk.StringVar(value="Open an image to start.")
         self.build_ui()
@@ -154,11 +233,16 @@ class ImageEditor:
         ttk.Button(toolbar, text="Perspective 4 pts", command=self.start_perspective_tool).pack(
             side="left", padx=2
         )
+        ttk.Button(toolbar, text="Crop & Straighten", command=self.start_scan_tool).pack(
+            side="left", padx=2
+        )
 
         self.canvas = tk.Canvas(self.root, bg="#202124", highlightthickness=0)
         self.canvas.pack(side="top", fill="both", expand=True)
         self.canvas.bind("<Configure>", lambda _event: self.render())
         self.canvas.bind("<Button-1>", self.on_canvas_click)
+        self.canvas.bind("<B1-Motion>", self.on_canvas_drag)
+        self.canvas.bind("<ButtonRelease-1>", self.on_canvas_release)
 
         status = ttk.Label(self.root, textvariable=self.status_var, anchor="w", padding=(8, 4))
         status.pack(side="bottom", fill="x")
@@ -188,6 +272,7 @@ class ImageEditor:
         core_menu.add_separator()
         core_menu.add_command(label="Affine From 3 Points", command=self.start_affine_tool)
         core_menu.add_command(label="Perspective Warp From 4 Points", command=self.start_perspective_tool)
+        core_menu.add_command(label="Crop & Straighten (Scan)...", command=self.start_scan_tool)
         core_menu.add_command(label="Panorama / Stitching...", command=self.stitch_panorama)
         menubar.add_cascade(label="Core", menu=core_menu)
 
@@ -362,6 +447,8 @@ class ImageEditor:
             anchor="nw",
         )
         self.draw_selected_points()
+        if self.scan_active:
+            self.draw_scan_overlay()
 
     def draw_selected_points(self):
         if not self.point_tool:
@@ -403,6 +490,9 @@ class ImageEditor:
         return None
 
     def on_canvas_click(self, event):
+        if self.scan_active:
+            self.scan_drag_index = self.scan_hit_corner(event)
+            return
         if not self.point_tool:
             return
         point = self.canvas_to_image(event)
@@ -410,6 +500,19 @@ class ImageEditor:
             return
 
         self.points.append(point)
+        if self.point_tool == "scan_manual":
+            if len(self.points) < 4:
+                self.render()
+                self.set_status(
+                    f"Corner {len(self.points)} saved. Click corner {len(self.points) + 1}."
+                )
+                return
+            corners = self.points
+            self.point_tool = None
+            self.points = []
+            self.begin_scan_adjust(corners)
+            return
+
         needed = 3 if self.point_tool == "affine" else 4
         if len(self.points) < needed:
             self.render()
@@ -463,7 +566,93 @@ class ImageEditor:
         self.render()
 
     def on_escape(self):
+        if self.scan_active and self.scan_dialog is not None:
+            self.scan_dialog.cancel()
+            return
         self.cancel_point_tool()
+
+    def start_scan_tool(self):
+        if not self.require_image():
+            return
+        self.cancel_point_tool(show_status=False)
+        corners = scanner.detect_document(self.image)
+        if corners is not None:
+            self.set_status("Document detected. Drag the corners to adjust, then Apply.")
+            self.begin_scan_adjust(corners.tolist())
+        else:
+            self.point_tool = "scan_manual"
+            self.points = []
+            self.preview_image = None
+            self.set_status("No document found. Click the four corners of the document.")
+            self.render()
+
+    def begin_scan_adjust(self, corners):
+        self.point_tool = None
+        self.points = []
+        self.scan_active = True
+        self.scan_corners = [[float(x), float(y)] for x, y in corners]
+        self.preview_image = None
+        self.render()
+        self.scan_dialog = ScanDialog(self)
+
+    def scan_hit_corner(self, event):
+        radius = 12
+        for index, (x_pos, y_pos) in enumerate(self.scan_corners):
+            sx = self.view_offset_x + x_pos * self.view_scale
+            sy = self.view_offset_y + y_pos * self.view_scale
+            if abs(event.x - sx) <= radius and abs(event.y - sy) <= radius:
+                return index
+        return None
+
+    def on_canvas_drag(self, event):
+        if not self.scan_active or self.scan_drag_index is None:
+            return
+        if self.image is None or self.view_scale <= 0:
+            return
+        height, width = self.image.shape[:2]
+        x_pos = min(max((event.x - self.view_offset_x) / self.view_scale, 0), width - 1)
+        y_pos = min(max((event.y - self.view_offset_y) / self.view_scale, 0), height - 1)
+        self.scan_corners[self.scan_drag_index] = [float(x_pos), float(y_pos)]
+        self.render()
+        if self.scan_dialog is not None:
+            self.scan_dialog.update_preview()
+
+    def on_canvas_release(self, _event):
+        self.scan_drag_index = None
+
+    def draw_scan_overlay(self):
+        screen = []
+        for x_pos, y_pos in self.scan_corners:
+            sx = self.view_offset_x + x_pos * self.view_scale
+            sy = self.view_offset_y + y_pos * self.view_scale
+            screen.append((sx, sy))
+        if len(screen) == 4:
+            flat = [value for point in screen for value in point]
+            self.canvas.create_polygon(*flat, outline="#00e0a0", fill="", width=2)
+        for sx, sy in screen:
+            radius = 7
+            self.canvas.create_oval(
+                sx - radius,
+                sy - radius,
+                sx + radius,
+                sy + radius,
+                outline="#ffffff",
+                fill="#00e0a0",
+                width=2,
+            )
+
+    def finish_scan(self, result):
+        self.scan_active = False
+        self.scan_corners = []
+        self.scan_dialog = None
+        self.commit_image(result, "Crop & Straighten")
+
+    def cancel_scan(self):
+        self.scan_active = False
+        self.scan_corners = []
+        self.scan_dialog = None
+        self.update_image_status("Ready")
+        self.render()
 
     def open_filter(self, title, controls, callback):
         if not self.require_image():
