@@ -1,0 +1,2 @@
+"""MyEditor package."""
+
