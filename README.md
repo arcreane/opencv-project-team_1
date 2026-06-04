@@ -25,6 +25,8 @@ Advanced features:
 - ORB keypoint display
 - Hough line detection
 - Connected components
+- Crop & straighten (document scanner): automatic corner detection and perspective correction
+- Remove background (GrabCut): transparent PNG, solid colour, blurred background or mask output
 - Undo / redo stack
 
 ## Install
@@ -67,12 +69,16 @@ For perspective warp, click the four corners of the area to straighten. The prog
 
 For panorama stitching, choose at least two overlapping images. If stitching fails, use images with more overlap and more visible texture.
 
+For remove background, click `Remove Background`, then drag a rectangle around the subject you want to keep. Pick an output mode in the dialog: `Transparent` saves a PNG file with an alpha channel, while the other modes edit the current image. Try it on `samples/grabcut_subject.png`.
+
 ## Project Structure
 
 ```text
 myeditor/
   app.py          GUI, dialogs, mouse interaction and undo/redo
   processing.py   OpenCV image-processing functions
+  scanner.py      document detection and perspective correction
+  segmentation.py GrabCut background removal
 main.py           application entry point
 samples/          test images for the demo
 tests/            small processing smoke tests
