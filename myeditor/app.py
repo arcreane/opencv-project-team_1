@@ -1,10 +1,10 @@
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import colorchooser, filedialog, messagebox, ttk
 
 import cv2
 from PIL import Image, ImageTk
 
-from myeditor import processing, scanner
+from myeditor import processing, scanner, segmentation
 
 
 RESAMPLE = getattr(Image, "Resampling", Image).LANCZOS
@@ -184,6 +184,102 @@ class ScanDialog:
         self.editor.cancel_scan()
 
 
+class GrabCutDialog:
+    MODES = {"Background colour": "color", "Blur background": "blur", "Mask": "mask"}
+
+    def __init__(self, editor):
+        self.editor = editor
+        self.mode = tk.StringVar(value="Background colour")
+        self.blur_strength = tk.IntVar(value=25)
+        self.fill_color = (255, 255, 255)  # BGR, default white
+        self.tk_preview = None
+
+        self.window = tk.Toplevel(editor.root)
+        self.window.title("Remove Background (GrabCut)")
+        self.window.resizable(False, False)
+        self.window.transient(editor.root)
+        self.window.protocol("WM_DELETE_WINDOW", self.cancel)
+
+        body = ttk.Frame(self.window, padding=12)
+        body.grid(row=0, column=0, sticky="nsew")
+        ttk.Label(
+            body,
+            text="Pick how the background should look, then Apply.",
+            wraplength=280,
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+
+        self.preview_label = ttk.Label(body)
+        self.preview_label.grid(row=1, column=0, columnspan=2, pady=4)
+
+        ttk.Label(body, text="Output").grid(row=2, column=0, sticky="w", pady=4)
+        ttk.OptionMenu(
+            body,
+            self.mode,
+            "Background colour",
+            *self.MODES,
+            command=lambda _value: self.update_preview(),
+        ).grid(row=2, column=1, sticky="ew", pady=4)
+
+        ttk.Label(body, text="Fill colour").grid(row=3, column=0, sticky="w", pady=4)
+        ttk.Button(body, text="Choose...", command=self.choose_color).grid(
+            row=3, column=1, sticky="ew", pady=4
+        )
+
+        ttk.Label(body, text="Blur strength").grid(row=4, column=0, sticky="w", pady=4)
+        ttk.Scale(
+            body,
+            from_=5,
+            to=61,
+            variable=self.blur_strength,
+            command=lambda _value: self.update_preview(),
+        ).grid(row=4, column=1, sticky="ew", pady=4)
+
+        buttons = ttk.Frame(body)
+        buttons.grid(row=5, column=0, columnspan=2, sticky="e", pady=(12, 0))
+        ttk.Button(buttons, text="Cancel", command=self.cancel).grid(row=0, column=0, padx=4)
+        ttk.Button(buttons, text="Apply", command=self.apply).grid(row=0, column=1, padx=4)
+
+        self.update_preview()
+
+    def mode_value(self):
+        return self.MODES[self.mode.get()]
+
+    def choose_color(self):
+        rgb, _hex = colorchooser.askcolor(title="Background colour", parent=self.window)
+        if rgb is not None:
+            red, green, blue = (int(channel) for channel in rgb)
+            self.fill_color = (blue, green, red)  # colorchooser gives RGB, OpenCV wants BGR
+            self.mode.set("Background colour")
+            self.update_preview()
+
+    def build_result(self):
+        image = self.editor.image
+        mask = self.editor.grabcut_mask
+        mode = self.mode_value()
+        if mode == "color":
+            return segmentation.fill_background(image, mask, self.fill_color)
+        if mode == "blur":
+            return segmentation.blur_background(image, mask, self.blur_strength.get())
+        return segmentation.mask_preview(mask)
+
+    def update_preview(self):
+        result = self.build_result()
+        rgb = cv2.cvtColor(result, cv2.COLOR_BGR2RGB)
+        pil_image = Image.fromarray(rgb)
+        pil_image.thumbnail((280, 280), RESAMPLE)
+        self.tk_preview = ImageTk.PhotoImage(pil_image)
+        self.preview_label.configure(image=self.tk_preview)
+
+    def apply(self):
+        result = self.build_result()
+        self.window.destroy()
+        self.editor.finish_grabcut(result)
+
+    def cancel(self):
+        self.window.destroy()
+        self.editor.cancel_grabcut()
+
+
 class ImageEditor:
     def __init__(self, root):
         self.root = root
@@ -210,6 +306,12 @@ class ImageEditor:
         self.scan_drag_index = None
         self.scan_dialog = None
 
+        self.grabcut_selecting = False
+        self.grabcut_start = None
+        self.grabcut_rect = None
+        self.grabcut_mask = None
+        self.grabcut_dialog = None
+
         self.status_var = tk.StringVar(value="Open an image to start.")
         self.build_ui()
         self.bind_shortcuts()
@@ -234,6 +336,9 @@ class ImageEditor:
             side="left", padx=2
         )
         ttk.Button(toolbar, text="Crop & Straighten", command=self.start_scan_tool).pack(
+            side="left", padx=2
+        )
+        ttk.Button(toolbar, text="Remove Background", command=self.start_grabcut_tool).pack(
             side="left", padx=2
         )
 
@@ -282,6 +387,7 @@ class ImageEditor:
         advanced_menu.add_command(label="Bilateral Denoising...", command=self.bilateral_dialog)
         advanced_menu.add_command(label="K-means Color Quantization...", command=self.kmeans_dialog)
         advanced_menu.add_command(label="Vignette...", command=self.vignette_dialog)
+        advanced_menu.add_command(label="Remove Background (GrabCut)...", command=self.start_grabcut_tool)
         advanced_menu.add_separator()
         advanced_menu.add_command(label="Cartoon Effect", command=self.apply_cartoon)
         advanced_menu.add_command(label="Pencil Sketch", command=self.apply_pencil)
@@ -449,6 +555,8 @@ class ImageEditor:
         self.draw_selected_points()
         if self.scan_active:
             self.draw_scan_overlay()
+        if self.grabcut_rect is not None:
+            self.draw_grabcut_overlay()
 
     def draw_selected_points(self):
         if not self.point_tool:
@@ -490,6 +598,10 @@ class ImageEditor:
         return None
 
     def on_canvas_click(self, event):
+        if self.grabcut_selecting:
+            self.grabcut_start = self._image_point_clamped(event)
+            self.grabcut_rect = None
+            return
         if self.scan_active:
             self.scan_drag_index = self.scan_hit_corner(event)
             return
@@ -569,6 +681,12 @@ class ImageEditor:
         if self.scan_active and self.scan_dialog is not None:
             self.scan_dialog.cancel()
             return
+        if self.grabcut_dialog is not None:
+            self.grabcut_dialog.cancel()
+            return
+        if self.grabcut_selecting:
+            self.cancel_grabcut()
+            return
         self.cancel_point_tool()
 
     def start_scan_tool(self):
@@ -605,6 +723,11 @@ class ImageEditor:
         return None
 
     def on_canvas_drag(self, event):
+        if self.grabcut_selecting and self.grabcut_start is not None:
+            end = self._image_point_clamped(event)
+            self.grabcut_rect = self._rect_from_points(self.grabcut_start, end)
+            self.render()
+            return
         if not self.scan_active or self.scan_drag_index is None:
             return
         if self.image is None or self.view_scale <= 0:
@@ -618,6 +741,9 @@ class ImageEditor:
             self.scan_dialog.update_preview()
 
     def on_canvas_release(self, _event):
+        if self.grabcut_selecting:
+            self.finish_grabcut_selection()
+            return
         self.scan_drag_index = None
 
     def draw_scan_overlay(self):
@@ -653,6 +779,79 @@ class ImageEditor:
         self.scan_dialog = None
         self.update_image_status("Ready")
         self.render()
+
+    def _image_point_clamped(self, event):
+        # Canvas pixel -> image pixel, kept inside the image bounds.
+        height, width = self.image.shape[:2]
+        x_pos = min(max((event.x - self.view_offset_x) / self.view_scale, 0), width - 1)
+        y_pos = min(max((event.y - self.view_offset_y) / self.view_scale, 0), height - 1)
+        return (float(x_pos), float(y_pos))
+
+    @staticmethod
+    def _rect_from_points(start, end):
+        # Two opposite corners -> (x, y, w, h), whatever the drag direction.
+        x0, y0 = start
+        x1, y1 = end
+        x, y = int(min(x0, x1)), int(min(y0, y1))
+        return (x, y, int(abs(x1 - x0)), int(abs(y1 - y0)))
+
+    def start_grabcut_tool(self):
+        if not self.require_image():
+            return
+        self.cancel_point_tool(show_status=False)
+        self.grabcut_selecting = True
+        self.grabcut_start = None
+        self.grabcut_rect = None
+        self.preview_image = None
+        self.set_status("Drag a rectangle around the subject you want to keep.")
+        self.render()
+
+    def finish_grabcut_selection(self):
+        self.grabcut_selecting = False
+        rect = self.grabcut_rect
+        if rect is None or rect[2] < 10 or rect[3] < 10:
+            self.grabcut_rect = None
+            self.set_status("Selection too small. Start again from Remove Background.")
+            self.render()
+            return
+        self.set_status("Separating subject from background...")
+        self.root.update_idletasks()
+        try:
+            self.grabcut_mask = segmentation.grabcut_mask(self.image, rect)
+        except Exception as error:
+            messagebox.showerror("Remove Background", str(error))
+            self.grabcut_rect = None
+            self.render()
+            return
+        self.grabcut_dialog = GrabCutDialog(self)
+
+    def finish_grabcut(self, result):
+        self.grabcut_rect = None
+        self.grabcut_mask = None
+        self.grabcut_dialog = None
+        self.commit_image(result, "Remove Background")
+
+    def cancel_grabcut(self):
+        self.grabcut_selecting = False
+        self.grabcut_start = None
+        self.grabcut_rect = None
+        self.grabcut_mask = None
+        self.grabcut_dialog = None
+        self.update_image_status("Ready")
+        self.render()
+
+    def draw_grabcut_overlay(self):
+        x, y, width, height = self.grabcut_rect
+        sx = self.view_offset_x + x * self.view_scale
+        sy = self.view_offset_y + y * self.view_scale
+        self.canvas.create_rectangle(
+            sx,
+            sy,
+            sx + width * self.view_scale,
+            sy + height * self.view_scale,
+            outline="#00e0a0",
+            width=2,
+        )
 
     def open_filter(self, title, controls, callback):
         if not self.require_image():
