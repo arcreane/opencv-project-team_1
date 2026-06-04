@@ -19,6 +19,23 @@ def grabcut_mask(image, rect, iterations=5):
     return binary.astype(np.uint8)
 
 
+def refine_mask(image, mask, fg_points, bg_points, radius=6, iterations=3):
+    # Re-run GrabCut starting from the current mask, plus the user's scribbles:
+    # foreground marks become sure-subject, background marks sure-background.
+    gc_mask = np.where(mask == 255, cv2.GC_PR_FGD, cv2.GC_PR_BGD).astype(np.uint8)
+    for x, y in fg_points:
+        cv2.circle(gc_mask, (int(x), int(y)), radius, int(cv2.GC_FGD), -1)
+    for x, y in bg_points:
+        cv2.circle(gc_mask, (int(x), int(y)), radius, int(cv2.GC_BGD), -1)
+
+    bg_model = np.zeros((1, 65), dtype=np.float64)
+    fg_model = np.zeros((1, 65), dtype=np.float64)
+    cv2.grabCut(image, gc_mask, None, bg_model, fg_model, iterations, cv2.GC_INIT_WITH_MASK)
+
+    binary = np.where((gc_mask == cv2.GC_FGD) | (gc_mask == cv2.GC_PR_FGD), 255, 0)
+    return binary.astype(np.uint8)
+
+
 def cutout_transparent(image, mask):
     # Keep the colours, use the mask as an alpha channel: the background becomes
     # transparent once the result is saved as PNG.

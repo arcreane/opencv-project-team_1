@@ -77,6 +77,23 @@ def test_composite_checkerboard_shows_subject_over_pattern():
     assert tuple(preview[10, 10]) in {(255, 255, 255), (200, 200, 200)}  # transparent -> board
 
 
+def test_refine_mask_applies_background_scribble():
+    image, rect = subject_on_background()
+    mask = segmentation.grabcut_mask(image, rect)
+    assert mask[100, 100] == 255  # subject centre starts as foreground
+    refined = segmentation.refine_mask(image, mask, fg_points=[], bg_points=[(100, 100)])
+    assert refined[100, 100] == 0  # a background scribble forces it out
+
+
+def test_refine_mask_returns_binary_mask():
+    image, rect = subject_on_background()
+    mask = segmentation.grabcut_mask(image, rect)
+    refined = segmentation.refine_mask(image, mask, fg_points=[(100, 100)], bg_points=[])
+    assert refined.shape == image.shape[:2]
+    assert refined.dtype == np.uint8
+    assert set(np.unique(refined)).issubset({0, 255})
+
+
 def test_save_cutout_writes_png_with_alpha(tmp_path):
     image, mask = labelled_image_and_mask()
     bgra = segmentation.cutout_transparent(image, mask)

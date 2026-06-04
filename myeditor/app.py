@@ -191,10 +191,12 @@ class GrabCutDialog:
         "Blur background": "blur",
         "Mask": "mask",
     }
+    BRUSHES = {"Keep subject": "fg", "Remove area": "bg"}
 
     def __init__(self, editor):
         self.editor = editor
         self.mode = tk.StringVar(value="Transparent (PNG)")
+        self.brush = tk.StringVar(value="Keep subject")
         self.blur_strength = tk.IntVar(value=25)
         self.fill_color = (255, 255, 255)  # BGR, default white
         self.tk_preview = None
@@ -210,7 +212,8 @@ class GrabCutDialog:
         ttk.Label(
             body,
             text="Pick how the background should look, then Apply. "
-            "Transparent saves a PNG; the others edit the picture.",
+            "Transparent saves a PNG; the others edit the picture. "
+            "Drag on the image with the touch-up brush to fix the cut-out.",
             wraplength=280,
         ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
 
@@ -240,8 +243,16 @@ class GrabCutDialog:
             command=lambda _value: self.update_preview(),
         ).grid(row=4, column=1, sticky="ew", pady=4)
 
+        ttk.Label(body, text="Touch-up brush").grid(row=5, column=0, sticky="w", pady=4)
+        ttk.OptionMenu(body, self.brush, "Keep subject", *self.BRUSHES).grid(
+            row=5, column=1, sticky="ew", pady=4
+        )
+        ttk.Button(body, text="Clear touch-ups", command=self.clear_touchups).grid(
+            row=6, column=1, sticky="ew", pady=4
+        )
+
         buttons = ttk.Frame(body)
-        buttons.grid(row=5, column=0, columnspan=2, sticky="e", pady=(12, 0))
+        buttons.grid(row=7, column=0, columnspan=2, sticky="e", pady=(12, 0))
         ttk.Button(buttons, text="Cancel", command=self.cancel).grid(row=0, column=0, padx=4)
         ttk.Button(buttons, text="Apply", command=self.apply).grid(row=0, column=1, padx=4)
 
@@ -249,6 +260,13 @@ class GrabCutDialog:
 
     def mode_value(self):
         return self.MODES[self.mode.get()]
+
+    def brush_value(self):
+        return self.BRUSHES[self.brush.get()]
+
+    def clear_touchups(self):
+        self.editor.clear_grabcut_touchups()
+        self.update_preview()
 
     def choose_color(self):
         rgb, _hex = colorchooser.askcolor(title="Background colour", parent=self.window)
@@ -323,6 +341,9 @@ class ImageEditor:
         self.grabcut_start = None
         self.grabcut_rect = None
         self.grabcut_mask = None
+        self.grabcut_base_mask = None
+        self.grabcut_fg_points = []
+        self.grabcut_bg_points = []
         self.grabcut_dialog = None
 
         self.status_var = tk.StringVar(value="Open an image to start.")
@@ -615,6 +636,9 @@ class ImageEditor:
             self.grabcut_start = self._image_point_clamped(event)
             self.grabcut_rect = None
             return
+        if self.grabcut_dialog is not None:
+            self.grabcut_paint(event)
+            return
         if self.scan_active:
             self.scan_drag_index = self.scan_hit_corner(event)
             return
@@ -741,6 +765,9 @@ class ImageEditor:
             self.grabcut_rect = self._rect_from_points(self.grabcut_start, end)
             self.render()
             return
+        if self.grabcut_dialog is not None:
+            self.grabcut_paint(event)
+            return
         if not self.scan_active or self.scan_drag_index is None:
             return
         if self.image is None or self.view_scale <= 0:
@@ -756,6 +783,9 @@ class ImageEditor:
     def on_canvas_release(self, _event):
         if self.grabcut_selecting:
             self.finish_grabcut_selection()
+            return
+        if self.grabcut_dialog is not None:
+            self.apply_grabcut_refine()
             return
         self.scan_drag_index = None
 
@@ -836,21 +866,65 @@ class ImageEditor:
             self.grabcut_rect = None
             self.render()
             return
+        self.grabcut_base_mask = self.grabcut_mask.copy()
+        self.grabcut_fg_points = []
+        self.grabcut_bg_points = []
         self.grabcut_dialog = GrabCutDialog(self)
 
     def finish_grabcut(self, result):
+        self._reset_grabcut_state()
+        self.commit_image(result, "Remove Background")
+
+    def _reset_grabcut_state(self):
         self.grabcut_rect = None
         self.grabcut_mask = None
+        self.grabcut_base_mask = None
+        self.grabcut_fg_points = []
+        self.grabcut_bg_points = []
         self.grabcut_dialog = None
-        self.commit_image(result, "Remove Background")
 
     def cancel_grabcut(self):
         self.grabcut_selecting = False
         self.grabcut_start = None
         self.grabcut_rect = None
         self.grabcut_mask = None
+        self.grabcut_base_mask = None
+        self.grabcut_fg_points = []
+        self.grabcut_bg_points = []
         self.grabcut_dialog = None
         self.update_image_status("Ready")
+        self.render()
+
+    def grabcut_paint(self, event):
+        # Add a brush mark: green keeps the subject, red removes the area.
+        point = self._image_point_clamped(event)
+        if self.grabcut_dialog.brush_value() == "fg":
+            self.grabcut_fg_points.append(point)
+        else:
+            self.grabcut_bg_points.append(point)
+        self.render()
+
+    def apply_grabcut_refine(self):
+        if not self.grabcut_fg_points and not self.grabcut_bg_points:
+            return
+        try:
+            self.grabcut_mask = segmentation.refine_mask(
+                self.image,
+                self.grabcut_base_mask,
+                self.grabcut_fg_points,
+                self.grabcut_bg_points,
+            )
+        except Exception as error:
+            messagebox.showerror("Remove Background", str(error))
+            return
+        if self.grabcut_dialog is not None:
+            self.grabcut_dialog.update_preview()
+
+    def clear_grabcut_touchups(self):
+        self.grabcut_fg_points = []
+        self.grabcut_bg_points = []
+        if self.grabcut_base_mask is not None:
+            self.grabcut_mask = self.grabcut_base_mask.copy()
         self.render()
 
     def export_cutout_png(self, bgra):
@@ -867,9 +941,7 @@ class ImageEditor:
             messagebox.showerror("Remove Background", str(error))
             self.cancel_grabcut()
             return
-        self.grabcut_rect = None
-        self.grabcut_mask = None
-        self.grabcut_dialog = None
+        self._reset_grabcut_state()
         self.set_status(f"Saved cut-out: {path}")
         self.render()
 
@@ -885,6 +957,17 @@ class ImageEditor:
             outline="#00e0a0",
             width=2,
         )
+        self._draw_brush_points(self.grabcut_fg_points, "#33dd55")  # keep
+        self._draw_brush_points(self.grabcut_bg_points, "#ff5555")  # remove
+
+    def _draw_brush_points(self, points, color):
+        radius = 3
+        for x_pos, y_pos in points:
+            cx = self.view_offset_x + x_pos * self.view_scale
+            cy = self.view_offset_y + y_pos * self.view_scale
+            self.canvas.create_oval(
+                cx - radius, cy - radius, cx + radius, cy + radius, fill=color, outline=""
+            )
 
     def open_filter(self, title, controls, callback):
         if not self.require_image():
