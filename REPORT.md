@@ -99,11 +99,11 @@ For the final PDF report, add screenshots of the actual GUI while showing two or
 
 ## 7. Project Management
 
-Replace this table with the final team names before submission.
+This table should match the GitHub commit history before submission. Names that are not known yet are kept as placeholders.
 
 | Member | Main responsibility | Notes |
 | --- | --- | --- |
-| Member 1 | GUI skeleton, menus, canvas display |  |
+| Zijie Huang | GUI workflow, image state management, Open/Save/Reset, Undo/Redo, user instructions | Responsible for the main user flow and documentation for running the app |
 | Member 2 | Core OpenCV operations |  |
 | Member 3 | Advanced features and samples |  |
 | Member 4 | Report, testing, packaging |  |
