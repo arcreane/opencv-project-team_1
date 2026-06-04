@@ -1,3 +1,5 @@
+import os
+
 import cv2
 import numpy as np
 
@@ -44,3 +46,28 @@ def blur_background(image, mask, strength=21):
 def mask_preview(mask):
     # Turn the binary mask into a viewable 3-channel grayscale image.
     return cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+
+
+def composite_checkerboard(bgra, square=10, light=255, dark=200):
+    # Display helper: lay a BGRA cut-out over a gray checkerboard so the
+    # transparent areas are visible on screen. Returns a plain BGR image.
+    height, width = bgra.shape[:2]
+    rows = (np.arange(height) // square)[:, None]
+    cols = (np.arange(width) // square)[None, :]
+    board = np.where((rows + cols) % 2 == 0, light, dark).astype(np.uint8)
+    background = cv2.cvtColor(board, cv2.COLOR_GRAY2BGR).astype(np.float32)
+
+    alpha = bgra[:, :, 3:4].astype(np.float32) / 255.0
+    foreground = bgra[:, :, :3].astype(np.float32)
+    blended = foreground * alpha + background * (1.0 - alpha)
+    return blended.astype(np.uint8)
+
+
+def save_cutout(path, bgra):
+    # Save a BGRA cut-out as PNG, keeping the alpha (transparency) channel.
+    # imencode + tofile handles non-ASCII paths, like the rest of the app.
+    ext = os.path.splitext(str(path))[1] or ".png"
+    ok, data = cv2.imencode(ext, bgra)
+    if not ok:
+        raise ValueError(f"Could not save image as {ext}")
+    data.tofile(str(path))

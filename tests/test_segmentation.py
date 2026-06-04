@@ -1,3 +1,4 @@
+import cv2
 import numpy as np
 
 from myeditor import segmentation
@@ -64,3 +65,24 @@ def test_mask_preview_is_three_channel_grayscale():
     assert preview.shape == (100, 100, 3)
     assert preview.dtype == np.uint8
     assert np.array_equal(preview[:, :, 0], mask)
+
+
+def test_composite_checkerboard_shows_subject_over_pattern():
+    image, mask = labelled_image_and_mask()
+    bgra = segmentation.cutout_transparent(image, mask)
+    preview = segmentation.composite_checkerboard(bgra)
+    assert preview.shape == (100, 100, 3)
+    assert preview.dtype == np.uint8
+    assert np.array_equal(preview[50, 50], image[50, 50])          # subject kept
+    assert tuple(preview[10, 10]) in {(255, 255, 255), (200, 200, 200)}  # transparent -> board
+
+
+def test_save_cutout_writes_png_with_alpha(tmp_path):
+    image, mask = labelled_image_and_mask()
+    bgra = segmentation.cutout_transparent(image, mask)
+    out = tmp_path / "cutout.png"
+    segmentation.save_cutout(str(out), bgra)
+    reloaded = cv2.imread(str(out), cv2.IMREAD_UNCHANGED)
+    assert reloaded.shape[2] == 4          # alpha channel preserved on disk
+    assert reloaded[10, 10, 3] == 0        # background transparent
+    assert reloaded[50, 50, 3] == 255      # subject opaque

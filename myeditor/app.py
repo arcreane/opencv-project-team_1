@@ -185,11 +185,16 @@ class ScanDialog:
 
 
 class GrabCutDialog:
-    MODES = {"Background colour": "color", "Blur background": "blur", "Mask": "mask"}
+    MODES = {
+        "Transparent (PNG)": "transparent",
+        "Background colour": "color",
+        "Blur background": "blur",
+        "Mask": "mask",
+    }
 
     def __init__(self, editor):
         self.editor = editor
-        self.mode = tk.StringVar(value="Background colour")
+        self.mode = tk.StringVar(value="Transparent (PNG)")
         self.blur_strength = tk.IntVar(value=25)
         self.fill_color = (255, 255, 255)  # BGR, default white
         self.tk_preview = None
@@ -204,7 +209,8 @@ class GrabCutDialog:
         body.grid(row=0, column=0, sticky="nsew")
         ttk.Label(
             body,
-            text="Pick how the background should look, then Apply.",
+            text="Pick how the background should look, then Apply. "
+            "Transparent saves a PNG; the others edit the picture.",
             wraplength=280,
         ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
 
@@ -215,7 +221,7 @@ class GrabCutDialog:
         ttk.OptionMenu(
             body,
             self.mode,
-            "Background colour",
+            "Transparent (PNG)",
             *self.MODES,
             command=lambda _value: self.update_preview(),
         ).grid(row=2, column=1, sticky="ew", pady=4)
@@ -256,6 +262,8 @@ class GrabCutDialog:
         image = self.editor.image
         mask = self.editor.grabcut_mask
         mode = self.mode_value()
+        if mode == "transparent":
+            return segmentation.cutout_transparent(image, mask)
         if mode == "color":
             return segmentation.fill_background(image, mask, self.fill_color)
         if mode == "blur":
@@ -264,6 +272,8 @@ class GrabCutDialog:
 
     def update_preview(self):
         result = self.build_result()
+        if result.shape[2] == 4:  # BGRA: show the transparency over a checkerboard
+            result = segmentation.composite_checkerboard(result)
         rgb = cv2.cvtColor(result, cv2.COLOR_BGR2RGB)
         pil_image = Image.fromarray(rgb)
         pil_image.thumbnail((280, 280), RESAMPLE)
@@ -273,7 +283,10 @@ class GrabCutDialog:
     def apply(self):
         result = self.build_result()
         self.window.destroy()
-        self.editor.finish_grabcut(result)
+        if self.mode_value() == "transparent":
+            self.editor.export_cutout_png(result)
+        else:
+            self.editor.finish_grabcut(result)
 
     def cancel(self):
         self.window.destroy()
@@ -838,6 +851,26 @@ class ImageEditor:
         self.grabcut_mask = None
         self.grabcut_dialog = None
         self.update_image_status("Ready")
+        self.render()
+
+    def export_cutout_png(self, bgra):
+        path = filedialog.asksaveasfilename(
+            defaultextension=".png",
+            filetypes=[("PNG image", "*.png")],
+        )
+        if not path:
+            self.cancel_grabcut()
+            return
+        try:
+            segmentation.save_cutout(path, bgra)
+        except Exception as error:
+            messagebox.showerror("Remove Background", str(error))
+            self.cancel_grabcut()
+            return
+        self.grabcut_rect = None
+        self.grabcut_mask = None
+        self.grabcut_dialog = None
+        self.set_status(f"Saved cut-out: {path}")
         self.render()
 
     def draw_grabcut_overlay(self):
