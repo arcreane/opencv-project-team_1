@@ -52,19 +52,28 @@ def test_fill_background_replaces_background_only():
     assert np.array_equal(result[50, 50], image[50, 50])   # subject untouched
 
 
-def test_blur_background_keeps_subject_sharp():
-    image, mask = labelled_image_and_mask()
-    result = segmentation.blur_background(image, mask, strength=15)
-    assert np.array_equal(result[50, 50], image[50, 50])       # subject untouched
-    assert not np.array_equal(result[10, 10], image[10, 10])   # background blurred
+def test_fill_background_thresholds_soft_mask():
+    # A soft (anti-aliased) mask must still split cleanly at the mid-point.
+    image = np.full((10, 10, 3), (5, 5, 5), dtype=np.uint8)
+    mask = np.zeros((10, 10), dtype=np.uint8)
+    mask[:, :5] = 255
+    mask[:, 5] = 130   # soft edge, kept as subject
+    mask[:, 6] = 100   # soft edge, dropped to background
+    result = segmentation.fill_background(image, mask, (0, 0, 200))
+    assert tuple(result[0, 0]) == (5, 5, 5)       # subject kept
+    assert tuple(result[0, 5]) == (5, 5, 5)       # >=128 kept
+    assert tuple(result[0, 6]) == (0, 0, 200)     # <128 filled
+    assert tuple(result[0, 9]) == (0, 0, 200)     # background filled
 
 
-def test_mask_preview_is_three_channel_grayscale():
-    _, mask = labelled_image_and_mask()
-    preview = segmentation.mask_preview(mask)
-    assert preview.shape == (100, 100, 3)
-    assert preview.dtype == np.uint8
-    assert np.array_equal(preview[:, :, 0], mask)
+def test_refine_edge_removes_fringe_and_softens():
+    # Pulls the edge in (drops the background halo) and softens it, keeps the interior.
+    mask = np.zeros((60, 60), dtype=np.uint8)
+    mask[20:40, 20:40] = 255
+    out = segmentation.refine_edge(mask)
+    assert out[30, 30] == 255   # interior intact
+    assert out[0, 0] == 0       # far background still out
+    assert out[20, 30] < 255    # original 1px border eaten / softened
 
 
 def test_composite_checkerboard_shows_subject_over_pattern():
@@ -92,6 +101,29 @@ def test_refine_mask_returns_binary_mask():
     assert refined.shape == image.shape[:2]
     assert refined.dtype == np.uint8
     assert set(np.unique(refined)).issubset({0, 255})
+
+
+def test_refine_mask_keeps_outside_rect_as_background():
+    # Two bright squares; the rect selects only the left one. A foreground brush on
+    # the right object must NOT resurrect it, because it sits outside the selection.
+    image = np.zeros((200, 300, 3), dtype=np.uint8)
+    image[60:140, 30:110] = (240, 240, 240)    # left subject (selected)
+    image[60:140, 190:270] = (240, 240, 240)   # right object (outside the rect)
+    rect = (20, 50, 100, 100)
+    mask = segmentation.grabcut_mask(image, rect)
+    refined = segmentation.refine_mask(
+        image, mask, fg_points=[(230, 100)], bg_points=[], keep_rect=rect
+    )
+    assert refined[100, 230] == 0  # outside the selection stays background
+
+
+def test_refine_mask_handles_scribble_covering_everything():
+    image, rect = subject_on_background()
+    mask = segmentation.grabcut_mask(image, rect)
+    # A brush so large it marks the whole image as background must not crash GrabCut.
+    refined = segmentation.refine_mask(image, mask, fg_points=[], bg_points=[(100, 100)], radius=500)
+    assert refined.dtype == np.uint8
+    assert int((refined == 255).sum()) == 0  # everything erased, no foreground left
 
 
 def test_save_cutout_writes_png_with_alpha(tmp_path):

@@ -19,7 +19,7 @@ def grabcut_mask(image, rect, iterations=5):
     return binary.astype(np.uint8)
 
 
-def refine_mask(image, mask, fg_points, bg_points, radius=6, iterations=3):
+def refine_mask(image, mask, fg_points, bg_points, radius=6, iterations=3, keep_rect=None):
     # Re-run GrabCut starting from the current mask, plus the user's scribbles:
     # foreground marks become sure-subject, background marks sure-background.
     gc_mask = np.where(mask == 255, cv2.GC_PR_FGD, cv2.GC_PR_BGD).astype(np.uint8)
@@ -28,12 +28,37 @@ def refine_mask(image, mask, fg_points, bg_points, radius=6, iterations=3):
     for x, y in bg_points:
         cv2.circle(gc_mask, (int(x), int(y)), radius, int(cv2.GC_BGD), -1)
 
-    bg_model = np.zeros((1, 65), dtype=np.float64)
-    fg_model = np.zeros((1, 65), dtype=np.float64)
-    cv2.grabCut(image, gc_mask, None, bg_model, fg_model, iterations, cv2.GC_INIT_WITH_MASK)
+    if keep_rect is not None:
+        # Everything outside the original selection stays sure-background, so the
+        # brush can never bring back an object the user never selected.
+        rx, ry, rw, rh = keep_rect
+        outside = np.ones(gc_mask.shape, dtype=bool)
+        outside[ry:ry + rh, rx:rx + rw] = False
+        gc_mask[outside] = cv2.GC_BGD
+
+    # GrabCut needs both a foreground and a background sample; if the scribbles
+    # wiped out one side, just honour the scribbles instead of crashing.
+    has_fg = np.any((gc_mask == cv2.GC_FGD) | (gc_mask == cv2.GC_PR_FGD))
+    has_bg = np.any((gc_mask == cv2.GC_BGD) | (gc_mask == cv2.GC_PR_BGD))
+    if has_fg and has_bg:
+        bg_model = np.zeros((1, 65), dtype=np.float64)
+        fg_model = np.zeros((1, 65), dtype=np.float64)
+        cv2.grabCut(image, gc_mask, None, bg_model, fg_model, iterations, cv2.GC_INIT_WITH_MASK)
 
     binary = np.where((gc_mask == cv2.GC_FGD) | (gc_mask == cv2.GC_PR_FGD), 255, 0)
     return binary.astype(np.uint8)
+
+
+def refine_edge(mask, erode_px=1, blur=1):
+    # GrabCut tends to keep a thin ring of background pixels around the subject
+    # (the "white halo"). Erode the mask to drop that ring, then blur to soften
+    # the edge into a clean anti-aliased alpha.
+    if erode_px > 0:
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * erode_px + 1, 2 * erode_px + 1))
+        mask = cv2.erode(mask, kernel)
+    if blur > 0:
+        mask = cv2.GaussianBlur(mask, (2 * blur + 1, 2 * blur + 1), 0)
+    return mask
 
 
 def cutout_transparent(image, mask):
@@ -45,24 +70,11 @@ def cutout_transparent(image, mask):
 
 
 def fill_background(image, mask, color):
-    # Replace every background pixel with a single solid colour, keep the subject.
+    # Replace background pixels with a solid colour, keep the subject. Threshold at
+    # the mid-point so a soft (anti-aliased) mask still splits cleanly into the two.
     result = image.copy()
-    result[mask == 0] = color
+    result[mask < 128] = color
     return result
-
-
-def blur_background(image, mask, strength=21):
-    # Blur the whole picture, then paste the sharp subject back on top (portrait look).
-    kernel = strength if strength % 2 == 1 else strength + 1  # GaussianBlur needs odd size
-    blurred = cv2.GaussianBlur(image, (kernel, kernel), 0)
-    result = blurred.copy()
-    result[mask == 255] = image[mask == 255]
-    return result
-
-
-def mask_preview(mask):
-    # Turn the binary mask into a viewable 3-channel grayscale image.
-    return cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
 
 
 def composite_checkerboard(bgra, square=10, light=255, dark=200):
