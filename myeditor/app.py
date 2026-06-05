@@ -188,16 +188,14 @@ class GrabCutDialog:
     MODES = {
         "Transparent (PNG)": "transparent",
         "Background colour": "color",
-        "Blur background": "blur",
-        "Mask": "mask",
     }
-    BRUSHES = {"Keep subject": "fg", "Remove area": "bg"}
+    # "Erase background" removes an area from the subject, "Restore subject" adds it back.
+    BRUSHES = {"Erase background": "bg", "Restore subject": "fg"}
 
     def __init__(self, editor):
         self.editor = editor
         self.mode = tk.StringVar(value="Transparent (PNG)")
-        self.brush = tk.StringVar(value="Keep subject")
-        self.blur_strength = tk.IntVar(value=25)
+        self.brush = tk.StringVar(value="Erase background")
         self.fill_color = (255, 255, 255)  # BGR, default white
         self.tk_preview = None
 
@@ -211,10 +209,10 @@ class GrabCutDialog:
         body.grid(row=0, column=0, sticky="nsew")
         ttk.Label(
             body,
-            text="Pick how the background should look, then Apply. "
-            "Transparent saves a PNG; the others edit the picture. "
-            "Drag on the image with the touch-up brush to fix the cut-out.",
-            wraplength=280,
+            text="Choose an output, then Apply. Transparent saves a PNG; the others "
+            "edit the picture.\nTo fix the cut-out, pick a brush and drag on the image.",
+            wraplength=300,
+            justify="left",
         ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
 
         self.preview_label = ttk.Label(body)
@@ -226,36 +224,36 @@ class GrabCutDialog:
             self.mode,
             "Transparent (PNG)",
             *self.MODES,
-            command=lambda _value: self.update_preview(),
+            command=lambda _value: self.on_mode_change(),
         ).grid(row=2, column=1, sticky="ew", pady=4)
 
-        ttk.Label(body, text="Fill colour").grid(row=3, column=0, sticky="w", pady=4)
-        ttk.Button(body, text="Choose...", command=self.choose_color).grid(
-            row=3, column=1, sticky="ew", pady=4
-        )
-
-        ttk.Label(body, text="Blur strength").grid(row=4, column=0, sticky="w", pady=4)
-        ttk.Scale(
-            body,
-            from_=5,
-            to=61,
-            variable=self.blur_strength,
-            command=lambda _value: self.update_preview(),
-        ).grid(row=4, column=1, sticky="ew", pady=4)
+        # The fill-colour control is only shown for the colour mode.
+        self.color_label = ttk.Label(body, text="Fill colour")
+        self.color_label.grid(row=3, column=0, sticky="w", pady=4)
+        self.color_button = ttk.Button(body, text="Choose...", command=self.choose_color)
+        self.color_button.grid(row=3, column=1, sticky="ew", pady=4)
 
         ttk.Label(body, text="Touch-up brush").grid(row=5, column=0, sticky="w", pady=4)
-        ttk.OptionMenu(body, self.brush, "Keep subject", *self.BRUSHES).grid(
+        ttk.OptionMenu(body, self.brush, "Erase background", *self.BRUSHES).grid(
             row=5, column=1, sticky="ew", pady=4
         )
-        ttk.Button(body, text="Clear touch-ups", command=self.clear_touchups).grid(
-            row=6, column=1, sticky="ew", pady=4
-        )
+
+        history = ttk.Frame(body)
+        history.grid(row=6, column=1, sticky="ew", pady=4)
+        history.columnconfigure(0, weight=1)
+        history.columnconfigure(1, weight=1)
+        self.undo_button = ttk.Button(history, text="Undo", command=self.undo_touchup)
+        self.undo_button.grid(row=0, column=0, sticky="ew", padx=(0, 2))
+        self.redo_button = ttk.Button(history, text="Redo", command=self.redo_touchup)
+        self.redo_button.grid(row=0, column=1, sticky="ew", padx=(2, 0))
 
         buttons = ttk.Frame(body)
         buttons.grid(row=7, column=0, columnspan=2, sticky="e", pady=(12, 0))
         ttk.Button(buttons, text="Cancel", command=self.cancel).grid(row=0, column=0, padx=4)
         ttk.Button(buttons, text="Apply", command=self.apply).grid(row=0, column=1, padx=4)
 
+        self.update_controls()
+        self.update_history_buttons()
         self.update_preview()
 
     def mode_value(self):
@@ -264,47 +262,69 @@ class GrabCutDialog:
     def brush_value(self):
         return self.BRUSHES[self.brush.get()]
 
-    def clear_touchups(self):
-        self.editor.clear_grabcut_touchups()
+    def on_mode_change(self):
+        self.update_controls()
         self.update_preview()
+
+    def update_controls(self):
+        # Show the fill-colour control only when the colour mode is selected.
+        show_color = self.mode_value() == "color"
+        for widget in (self.color_label, self.color_button):
+            if show_color:
+                widget.grid()
+            else:
+                widget.grid_remove()
+
+    def undo_touchup(self):
+        self.editor.grabcut_undo_touchup()
+
+    def redo_touchup(self):
+        self.editor.grabcut_redo_touchup()
+
+    def update_history_buttons(self):
+        # Grey out each button when its action is unavailable (no edits / no undo yet).
+        self.undo_button.configure(state="normal" if self.editor.grabcut_strokes else "disabled")
+        self.redo_button.configure(state="normal" if self.editor.grabcut_redo_strokes else "disabled")
 
     def choose_color(self):
         rgb, _hex = colorchooser.askcolor(title="Background colour", parent=self.window)
         if rgb is not None:
             red, green, blue = (int(channel) for channel in rgb)
             self.fill_color = (blue, green, red)  # colorchooser gives RGB, OpenCV wants BGR
-            self.mode.set("Background colour")
             self.update_preview()
 
     def build_result(self):
-        image = self.editor.image
-        mask = self.editor.grabcut_mask
-        mode = self.mode_value()
-        if mode == "transparent":
-            return segmentation.cutout_transparent(image, mask)
-        if mode == "color":
+        # Final, full-resolution result, only built on Apply / export.
+        image = self.editor.grabcut_source  # BGR snapshot, so cut-out / fill stay 3-channel
+        mask = self.editor.full_mask()
+        if self.mode_value() == "color":
             return segmentation.fill_background(image, mask, self.fill_color)
-        if mode == "blur":
-            return segmentation.blur_background(image, mask, self.blur_strength.get())
-        return segmentation.mask_preview(mask)
+        return segmentation.cutout_transparent(image, mask)
+
+    def build_display(self):
+        # Lightweight preview built on the small working image (never full res),
+        # so dragging the brush on a big photo stays cheap. Returns BGR.
+        work = self.editor.grabcut_work_image
+        mask = segmentation.refine_edge(self.editor.grabcut_mask)  # match the final edge
+        if self.mode_value() == "color":
+            return segmentation.fill_background(work, mask, self.fill_color)
+        return segmentation.composite_checkerboard(segmentation.cutout_transparent(work, mask))
 
     def update_preview(self):
-        result = self.build_result()
-        if result.shape[2] == 4:  # BGRA: show the transparency over a checkerboard
-            result = segmentation.composite_checkerboard(result)
-        rgb = cv2.cvtColor(result, cv2.COLOR_BGR2RGB)
+        display = self.build_display()
+
+        rgb = cv2.cvtColor(display, cv2.COLOR_BGR2RGB)
         pil_image = Image.fromarray(rgb)
         pil_image.thumbnail((280, 280), RESAMPLE)
         self.tk_preview = ImageTk.PhotoImage(pil_image)
         self.preview_label.configure(image=self.tk_preview)
 
+        self.editor.show_grabcut_preview(display)  # live feedback on the main canvas
+
     def apply(self):
         result = self.build_result()
         self.window.destroy()
-        if self.mode_value() == "transparent":
-            self.editor.export_cutout_png(result)
-        else:
-            self.editor.finish_grabcut(result)
+        self.editor.finish_grabcut(result)
 
     def cancel(self):
         self.window.destroy()
@@ -340,10 +360,14 @@ class ImageEditor:
         self.grabcut_selecting = False
         self.grabcut_start = None
         self.grabcut_rect = None
-        self.grabcut_mask = None
-        self.grabcut_base_mask = None
-        self.grabcut_fg_points = []
-        self.grabcut_bg_points = []
+        self.grabcut_mask = None          # mask at working (downscaled) resolution
+        self.grabcut_base_mask = None     # initial selection mask, before touch-ups
+        self.grabcut_source = None        # full-res BGR snapshot the cut-out is built from
+        self.grabcut_work_image = None    # downscaled copy GrabCut runs on
+        self.grabcut_scale = 1.0          # working size / full size
+        self.grabcut_stroke = []          # brush points of the stroke being drawn
+        self.grabcut_strokes = []         # committed strokes: list of (kind, points)
+        self.grabcut_redo_strokes = []
         self.grabcut_dialog = None
 
         self.status_var = tk.StringVar(value="Open an image to start.")
@@ -486,16 +510,38 @@ class ImageEditor:
         if not path:
             return
         try:
-            processing.save_image(path, self.image)
+            # Keep the alpha channel only for formats that support it; otherwise
+            # save_image drops it to BGR so a JPEG/BMP export still works.
+            alpha_formats = (".png", ".tif", ".tiff", ".webp")
+            if self.image.ndim == 3 and self.image.shape[2] == 4 and path.lower().endswith(alpha_formats):
+                segmentation.save_cutout(path, self.image)
+            else:
+                processing.save_image(path, self.image)
             self.set_status(f"Saved: {path}")
         except Exception as error:
             messagebox.showerror("Save image", str(error))
 
+    def _history_limit(self):
+        # Fewer undo snapshots for big images: a full-res BGRA copy can be ~45 MB,
+        # so 25 of them would exhaust memory. Scale the depth to the image size.
+        if self.image is None:
+            return 25
+        megapixels = (self.image.shape[0] * self.image.shape[1]) / 1_000_000
+        if megapixels > 8:
+            return 3
+        if megapixels > 2:
+            return 10
+        return 25
+
     def commit_image(self, image, action):
         if self.image is not None:
             self.undo_stack.append(self.image.copy())
-            self.undo_stack = self.undo_stack[-25:]
-        self.image = processing.as_bgr(image)
+            self.undo_stack = self.undo_stack[-self._history_limit():]
+        # Keep a 4-channel (transparent) result as-is; normalise everything else to BGR.
+        if image.ndim == 3 and image.shape[2] == 4:
+            self.image = image
+        else:
+            self.image = processing.as_bgr(image)
         if self.original_image is None:
             self.original_image = self.image.copy()
         self.preview_image = None
@@ -520,6 +566,7 @@ class ImageEditor:
             self.set_status("Nothing to undo.")
             return
         self.redo_stack.append(self.image.copy())
+        self.redo_stack = self.redo_stack[-self._history_limit():]
         self.image = self.undo_stack.pop()
         self.preview_image = None
         self.update_image_status("Undo")
@@ -577,8 +624,15 @@ class ImageEditor:
         self.view_offset_x = (canvas_width - display_width) // 2
         self.view_offset_y = (canvas_height - display_height) // 2
 
-        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        pil_image = Image.fromarray(rgb).resize((display_width, display_height), RESAMPLE)
+        if image.ndim == 3 and image.shape[2] == 4:
+            # Transparent image: resize first, then composite on the checkerboard at
+            # display size (compositing a full-resolution image would blow up memory).
+            small = cv2.resize(image, (display_width, display_height), interpolation=cv2.INTER_AREA)
+            rgb = cv2.cvtColor(segmentation.composite_checkerboard(small), cv2.COLOR_BGR2RGB)
+            pil_image = Image.fromarray(rgb)
+        else:
+            rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            pil_image = Image.fromarray(rgb).resize((display_width, display_height), RESAMPLE)
         self.tk_image = ImageTk.PhotoImage(pil_image)
         self.canvas.create_image(
             self.view_offset_x,
@@ -785,7 +839,7 @@ class ImageEditor:
             self.finish_grabcut_selection()
             return
         if self.grabcut_dialog is not None:
-            self.apply_grabcut_refine()
+            self.commit_grabcut_stroke()
             return
         self.scan_drag_index = None
 
@@ -859,17 +913,69 @@ class ImageEditor:
             return
         self.set_status("Separating subject from background...")
         self.root.update_idletasks()
+        # GrabCut needs a 3-channel BGR image; the editor image may be BGRA after a
+        # previous transparent cut-out, so work from a BGR snapshot of it.
+        source = processing.as_bgr(self.image)
+        work_image, scale = self._grabcut_downscale(source)
         try:
-            self.grabcut_mask = segmentation.grabcut_mask(self.image, rect)
+            mask = segmentation.grabcut_mask(work_image, self._scale_rect(rect, scale))
         except Exception as error:
             messagebox.showerror("Remove Background", str(error))
             self.grabcut_rect = None
             self.render()
             return
-        self.grabcut_base_mask = self.grabcut_mask.copy()
-        self.grabcut_fg_points = []
-        self.grabcut_bg_points = []
+        self.grabcut_source = source
+        self.grabcut_work_image = work_image
+        self.grabcut_scale = scale
+        self.grabcut_mask = mask
+        self.grabcut_base_mask = mask.copy()
+        self.grabcut_stroke = []
+        self.grabcut_strokes = []
+        self.grabcut_redo_strokes = []
         self.grabcut_dialog = GrabCutDialog(self)
+
+    @staticmethod
+    def _grabcut_downscale(image, max_width=800):
+        # GrabCut is slow at full resolution; run it on a smaller copy and map back.
+        width = image.shape[1]
+        if width <= max_width:
+            return image, 1.0
+        scale = max_width / width
+        size = (int(width * scale), int(image.shape[0] * scale))
+        return cv2.resize(image, size, interpolation=cv2.INTER_AREA), scale
+
+    @staticmethod
+    def _scale_rect(rect, scale):
+        x, y, width, height = rect
+        return (int(x * scale), int(y * scale), max(1, int(width * scale)), max(1, int(height * scale)))
+
+    def full_mask(self):
+        # The working mask resized back to the full image. LINEAR gives a soft,
+        # anti-aliased edge instead of blocky steps; refine_edge drops the thin
+        # background halo and softens the result.
+        if self.grabcut_mask is None:
+            return None
+        if self.grabcut_scale == 1.0:
+            mask = self.grabcut_mask
+        else:
+            height, width = self.image.shape[:2]
+            mask = cv2.resize(self.grabcut_mask, (width, height), interpolation=cv2.INTER_LINEAR)
+        return segmentation.refine_edge(mask)
+
+    def _brush_radius(self):
+        # Keep a roughly constant on-screen brush size, expressed in working pixels.
+        screen_px = 10
+        return max(2, int(screen_px / max(self.view_scale, 1e-6) * self.grabcut_scale))
+
+    def show_grabcut_preview(self, display_bgr):
+        # Show the cut-out live on the canvas. The preview is built at working
+        # resolution (cheap); stretch it back to the full image size so the canvas
+        # keeps a single coordinate space and the brush marks stay aligned.
+        height, width = self.image.shape[:2]
+        if display_bgr.shape[:2] != (height, width):
+            display_bgr = cv2.resize(display_bgr, (width, height), interpolation=cv2.INTER_NEAREST)
+        self.preview_image = display_bgr
+        self.render()
 
     def finish_grabcut(self, result):
         self._reset_grabcut_state()
@@ -879,71 +985,78 @@ class ImageEditor:
         self.grabcut_rect = None
         self.grabcut_mask = None
         self.grabcut_base_mask = None
-        self.grabcut_fg_points = []
-        self.grabcut_bg_points = []
+        self.grabcut_source = None
+        self.grabcut_work_image = None
+        self.grabcut_scale = 1.0
+        self.grabcut_stroke = []
+        self.grabcut_strokes = []
+        self.grabcut_redo_strokes = []
         self.grabcut_dialog = None
 
     def cancel_grabcut(self):
         self.grabcut_selecting = False
         self.grabcut_start = None
-        self.grabcut_rect = None
-        self.grabcut_mask = None
-        self.grabcut_base_mask = None
-        self.grabcut_fg_points = []
-        self.grabcut_bg_points = []
-        self.grabcut_dialog = None
+        self._reset_grabcut_state()
+        self.preview_image = None
         self.update_image_status("Ready")
         self.render()
 
     def grabcut_paint(self, event):
-        # Add a brush mark: green keeps the subject, red removes the area.
+        # Collect the brush points of the current stroke, drawing each dot live.
         point = self._image_point_clamped(event)
-        if self.grabcut_dialog.brush_value() == "fg":
-            self.grabcut_fg_points.append(point)
-        else:
-            self.grabcut_bg_points.append(point)
-        self.render()
+        self.grabcut_stroke.append(point)
+        color = "#33dd55" if self.grabcut_dialog.brush_value() == "fg" else "#ff5555"
+        self._draw_brush_points([point], color)
 
-    def apply_grabcut_refine(self):
-        if not self.grabcut_fg_points and not self.grabcut_bg_points:
+    def commit_grabcut_stroke(self):
+        # Turn the finished drag into one permanent stroke, then recompute the mask.
+        if not self.grabcut_stroke:
             return
-        try:
-            self.grabcut_mask = segmentation.refine_mask(
-                self.image,
-                self.grabcut_base_mask,
-                self.grabcut_fg_points,
-                self.grabcut_bg_points,
-            )
-        except Exception as error:
-            messagebox.showerror("Remove Background", str(error))
+        kind = self.grabcut_dialog.brush_value()
+        self.grabcut_strokes.append((kind, self.grabcut_stroke))
+        self.grabcut_redo_strokes = []
+        self.grabcut_stroke = []
+        self._recompute_grabcut_mask()
+
+    def _recompute_grabcut_mask(self):
+        # Rebuild from the original selection plus EVERY committed stroke, so each
+        # earlier touch-up stays locked in as a sure mark and never gets undone.
+        scale = self.grabcut_scale
+        fg = [(x * scale, y * scale) for kind, pts in self.grabcut_strokes if kind == "fg" for x, y in pts]
+        bg = [(x * scale, y * scale) for kind, pts in self.grabcut_strokes if kind == "bg" for x, y in pts]
+        if not fg and not bg:
+            self.grabcut_mask = self.grabcut_base_mask.copy()
+        else:
+            try:
+                self.grabcut_mask = segmentation.refine_mask(
+                    self.grabcut_work_image,
+                    self.grabcut_base_mask,
+                    fg,
+                    bg,
+                    radius=self._brush_radius(),
+                    keep_rect=self._scale_rect(self.grabcut_rect, scale),
+                )
+            except Exception as error:
+                messagebox.showerror("Remove Background", str(error))
+                return
+        self._refresh_grabcut_dialog()
+
+    def grabcut_undo_touchup(self):
+        if not self.grabcut_strokes:
             return
+        self.grabcut_redo_strokes.append(self.grabcut_strokes.pop())
+        self._recompute_grabcut_mask()
+
+    def grabcut_redo_touchup(self):
+        if not self.grabcut_redo_strokes:
+            return
+        self.grabcut_strokes.append(self.grabcut_redo_strokes.pop())
+        self._recompute_grabcut_mask()
+
+    def _refresh_grabcut_dialog(self):
         if self.grabcut_dialog is not None:
             self.grabcut_dialog.update_preview()
-
-    def clear_grabcut_touchups(self):
-        self.grabcut_fg_points = []
-        self.grabcut_bg_points = []
-        if self.grabcut_base_mask is not None:
-            self.grabcut_mask = self.grabcut_base_mask.copy()
-        self.render()
-
-    def export_cutout_png(self, bgra):
-        path = filedialog.asksaveasfilename(
-            defaultextension=".png",
-            filetypes=[("PNG image", "*.png")],
-        )
-        if not path:
-            self.cancel_grabcut()
-            return
-        try:
-            segmentation.save_cutout(path, bgra)
-        except Exception as error:
-            messagebox.showerror("Remove Background", str(error))
-            self.cancel_grabcut()
-            return
-        self._reset_grabcut_state()
-        self.set_status(f"Saved cut-out: {path}")
-        self.render()
+            self.grabcut_dialog.update_history_buttons()
 
     def draw_grabcut_overlay(self):
         x, y, width, height = self.grabcut_rect
@@ -957,8 +1070,9 @@ class ImageEditor:
             outline="#00e0a0",
             width=2,
         )
-        self._draw_brush_points(self.grabcut_fg_points, "#33dd55")  # keep
-        self._draw_brush_points(self.grabcut_bg_points, "#ff5555")  # remove
+        if self.grabcut_dialog is not None and self.grabcut_stroke:
+            color = "#33dd55" if self.grabcut_dialog.brush_value() == "fg" else "#ff5555"
+            self._draw_brush_points(self.grabcut_stroke, color)
 
     def _draw_brush_points(self, points, color):
         radius = 3
