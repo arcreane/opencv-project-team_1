@@ -1,41 +1,36 @@
 # MyEditor
 
-MyEditor is a small desktop image editor built for the Multimedia Application
-final project. The GUI is written with **Flet** (Flutter under the hood) and the
-image-processing work is done with **OpenCV**.
+MyEditor is a small desktop image editor for the Multimedia Application final
+project. It is a GIMP-like editor powered by OpenCV: the user can open an image,
+choose an operation, adjust parameters, preview the result, apply or cancel the
+change, and save the final image.
+
+The current version uses **Python**, **Flet** for the desktop GUI, **OpenCV** for
+image processing, **NumPy** for image arrays, and **pytest** for tests.
 
 ## Final Scope
 
-Core features:
+Core OpenCV features:
 
 - Thresholding: binary, Otsu and adaptive thresholding
 - Histogram equalization: global equalization and CLAHE
 - Morphology: dilation, erosion, opening, closing and gradient, with kernel size and shape controls
 - Canny edge detection: low threshold, high threshold and aperture size controls
-- Geometric transforms: affine transform from 3 mouse-selected points, perspective warp from 4 points
-- Crop & Straighten (Scan): auto document detection, draggable corners, B&W / Color / Gray output
-- Panorama stitching: load several overlapping images and build a panorama
+- Geometric transforms: affine transform from 3 mouse-selected points and perspective warp from 4 mouse-selected points
+- Panorama stitching: choose several overlapping images and build one panorama
 
-Selection:
+Extra image tools present in the current code:
 
-- Remove Background (GrabCut): rectangle selection, brush touch-ups
-  (erase background / restore subject) with undo/redo, transparent PNG cut-out
-  or solid background colour
-
-Advanced features:
-
-- Gamma correction, unsharp mask, bilateral denoising
+- Crop & Straighten (Scan): automatic document detection, draggable corners, B&W / Color / Gray output
+- Remove Background (GrabCut): rectangle selection, brush touch-ups, transparent PNG cut-out or solid background colour
+- Gamma correction, unsharp mask and bilateral denoising
 - K-means color quantization
-- Cartoon effect, pencil sketch, vignette
-- ORB keypoints, Hough lines, connected components
+- Cartoon effect, pencil sketch and vignette
+- ORB keypoints, Hough lines and connected components
+- Undo / Redo image state stack
 
-GUI features:
-
-- Open / Save As / Reset
-- Undo and Redo
-- Live preview for tools with parameters
-- Status and error messages
-- Keyboard shortcuts: Ctrl+O, Ctrl+S, Ctrl+Z, Ctrl+Y
+The current merged code does not implement a separate Magic Wand / Flood Fill
+tool, so it is not listed as a final feature.
 
 ## Install
 
@@ -50,31 +45,46 @@ pip install -r requirements.txt
 ## Run
 
 ```bash
-python main.py
+python3 main.py
 ```
 
-This opens a native desktop window.
+This opens the Flet desktop window.
 
-## How to Use
+## How to Use the GUI
 
-1. Open an image with the folder icon in the top bar (`samples/` has test images).
-2. Pick a tool in the left panel (Core / Géométrie / Sélection / Advanced).
-3. For slider tools, adjust the values and watch the live preview, then
-   **Appliquer** to keep the result or **Annuler** to cancel.
-4. Use the save icon to export the edited image.
+1. Click the folder icon to open an image. The `samples/` folder has test images.
+2. Pick a tool from the left panel. The main groups are File actions, Core tools,
+   Geometry / scan tools, Selection tools and Advanced tools.
+3. For parameter tools, move the sliders to see a live preview.
+4. Click **Appliquer** to keep the preview, or **Annuler** to return to the current image.
+5. Use the save icon to export the edited image.
+
+Basic workflow buttons:
+
+- **Open Image** loads an image into the editor.
+- **Save As** writes the current edited image to disk.
+- **Reset** restores the original image that was first opened.
+- **Undo** returns to the previous edited image.
+- **Redo** restores an image that was undone.
 
 Tool notes:
 
 - **Affine**: click three points in this order: top-left, top-right, bottom-left.
-- **Perspective**: click the four corners of the area to straighten. The corners
-  are ordered automatically.
+- **Perspective**: click four corners of the area to straighten. The program orders
+  the corners automatically.
 - **Crop & Straighten**: the document is auto-detected; drag the green corners to
-  adjust, choose the output, then apply.
-- **Remove Background**: drag a rectangle around the subject; refine with the
-  touch-up brush (erase background / restore subject); choose a transparent PNG
-  or a background colour; then apply. Save as PNG to keep transparency.
-- **Panorama**: choose at least two overlapping images with enough overlap and
-  visible texture.
+  adjust the scan area, choose the output mode, then apply.
+- **Remove Background**: drag a rectangle around the subject, refine with the
+  brush, then choose transparent PNG or a background colour.
+- **Panorama**: choose at least two images with enough overlap and visual features.
+  Stitching can fail if the photos do not share enough matching points.
+
+Keyboard shortcuts:
+
+- `Ctrl+O`: open image
+- `Ctrl+S`: save image
+- `Ctrl+Z`: undo
+- `Ctrl+Y`: redo
 
 ## Project Structure
 
@@ -93,12 +103,12 @@ tests/             processing / scanner / segmentation tests
 ## Test
 
 ```bash
-python -m pytest
+python3 -m pytest
 ```
 
-The tests cover the processing, scanner and segmentation functions. The main
-validation is still the GUI demo, because the project is an interactive image
-editor.
+The tests cover the processing, scanner and segmentation functions. The GUI is
+also checked manually during the demo, because the project is an interactive
+desktop editor.
 
 ## Demo Assets
 
