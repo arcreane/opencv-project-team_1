@@ -112,6 +112,15 @@ class MyEditor:
         self.grabcut_undo_btn = None
         self.grabcut_redo_btn = None
 
+        # --- crop state ---
+        self.crop_active = False
+        self.crop_rect = None
+        self.crop_rect_start = None
+
+        # --- before/after compare state ---
+        self.compare_active = False
+        self.compare_split = 0.5
+
         self.file_picker = ft.FilePicker()
         self.build()
 
@@ -149,6 +158,9 @@ class MyEditor:
                 self.redo_btn,
                 ft.IconButton(ft.Icons.RESTART_ALT, tooltip="Réinitialiser",
                               on_click=lambda e: self.reset_image()),
+                ft.VerticalDivider(width=8),
+                ft.IconButton(ft.Icons.COMPARE, tooltip="Avant / Après",
+                              on_click=lambda e: self.toggle_compare()),
                 ft.Container(width=8),
             ],
         )
@@ -171,6 +183,17 @@ class MyEditor:
                          lambda e: self.start_points("perspective")),
                 self.nav("Crop & Straighten (Scan)", ft.Icons.DOCUMENT_SCANNER,
                          lambda e: self.start_scan()),
+                self.section("TRANSFORMER"),
+                self.nav("Rotation", ft.Icons.ROTATE_RIGHT,
+                         lambda e: self.start_rotation()),
+                self.nav("Miroir horizontal", ft.Icons.SWAP_HORIZ,
+                         lambda e: self.apply_now("Miroir horizontal",
+                                                  lambda im: processing.flip(im, True))),
+                self.nav("Miroir vertical", ft.Icons.FLIP,
+                         lambda e: self.apply_now("Miroir vertical",
+                                                  lambda im: processing.flip(im, False))),
+                self.nav("Recadrage (Crop)", ft.Icons.CROP,
+                         lambda e: self.start_crop()),
                 self.section("SÉLECTION"),
                 self.nav("Remove Background (GrabCut)", ft.Icons.CONTENT_CUT,
                          lambda e: self.start_grabcut()),
@@ -293,6 +316,11 @@ class MyEditor:
             self.page.update()
             return
 
+        if (self.compare_active and self.original_image is not None
+                and self.image is not None):
+            self.render_compare()
+            return
+
         if img.ndim == 3 and img.shape[2] == 4:
             # BGRA cut-out: show it over a checkerboard so transparency is visible.
             bgr = segmentation.composite_checkerboard(img)
@@ -311,12 +339,60 @@ class MyEditor:
             disp = self.draw_scan_corners(disp, scale)
         if self.grabcut_active:
             disp = self.draw_grabcut_overlay(disp, scale)
+        if self.crop_active and self.crop_rect:
+            disp = self.draw_crop_overlay(disp, scale)
 
         self.canvas_image.src = encode_png(disp)
         self.canvas_image.width = dw
         self.canvas_image.height = dh
         self.image_holder.content = self.gesture
         self.page.update()
+
+    def _as_display_bgr(self, img):
+        if img.ndim == 3 and img.shape[2] == 4:
+            return segmentation.composite_checkerboard(img)
+        return processing.as_bgr(img)
+
+    def render_compare(self):
+        # Split view: left = original, right = current, with a draggable divider.
+        current = self._as_display_bgr(self.image)
+        h, w = current.shape[:2]
+        original = cv2.resize(self._as_display_bgr(self.original_image), (w, h),
+                              interpolation=cv2.INTER_AREA)
+        scale = min(self.stage_w / w, self.stage_h / h, 1.0)
+        dw = max(1, int(w * scale))
+        dh = max(1, int(h * scale))
+        self.view_scale = scale
+
+        cur_disp = cv2.resize(current, (dw, dh), interpolation=cv2.INTER_AREA)
+        org_disp = cv2.resize(original, (dw, dh), interpolation=cv2.INTER_AREA)
+        split_x = int(min(max(self.compare_split, 0.0), 1.0) * dw)
+        out = cur_disp.copy()
+        out[:, :split_x] = org_disp[:, :split_x]
+        cv2.line(out, (split_x, 0), (split_x, dh), (255, 255, 255), 2)
+        cv2.putText(out, "AVANT", (8, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                    (255, 255, 255), 2)
+        text_size = cv2.getTextSize("APRES", cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
+        cv2.putText(out, "APRES", (dw - text_size[0] - 8, 24),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+
+        self.canvas_image.src = encode_png(out)
+        self.canvas_image.width = dw
+        self.canvas_image.height = dh
+        self.image_holder.content = self.gesture
+        self.page.update()
+
+    def draw_crop_overlay(self, disp, scale):
+        out = disp.copy()
+        x, y, w, h = self.crop_rect
+        p1 = (int(x * scale), int(y * scale))
+        p2 = (int((x + w) * scale), int((y + h) * scale))
+        # Dim the area outside the crop rectangle, keep the inside bright.
+        shade = out.copy()
+        shade[:] = (shade[:] * 0.4).astype(np.uint8)
+        shade[p1[1]:p2[1], p1[0]:p2[0]] = out[p1[1]:p2[1], p1[0]:p2[0]]
+        cv2.rectangle(shade, p1, p2, (108, 140, 255), 2)
+        return shade
 
     def draw_points(self, disp, scale):
         out = disp.copy()
@@ -488,6 +564,9 @@ class MyEditor:
         self.grabcut_preview_img = None
         self.grabcut_undo_btn = None
         self.grabcut_redo_btn = None
+        self.crop_active = False
+        self.crop_rect = None
+        self.crop_rect_start = None
         self.preview_image = None
         self.right_panel.visible = False
         if rerender:
@@ -861,20 +940,30 @@ class MyEditor:
             return
         self.commit_image(result, "Crop & Straighten")
 
-    # ---- pan dispatch (scanner corner drag vs grabcut rect / brush) ----
+    # ---- pan dispatch (compare slider / crop / scanner / grabcut) ----
     def on_pan_start(self, e):
-        if self.scan_active:
+        if self.compare_active:
+            self.compare_pan(e)
+        elif self.crop_active:
+            self.crop_pan_start(e)
+        elif self.scan_active:
             self.scan_pan_start(e)
         elif self.grabcut_active:
             self.grabcut_pan_start(e)
 
     def on_pan_update(self, e):
-        if self.scan_active:
+        if self.compare_active:
+            self.compare_pan(e)
+        elif self.crop_active:
+            self.crop_pan_update(e)
+        elif self.scan_active:
             self.scan_pan_update(e)
         elif self.grabcut_active:
             self.grabcut_pan_update(e)
 
     def on_pan_end(self, e):
+        if self.crop_active:
+            return
         if self.scan_active:
             self.scan_drag_index = None
         elif self.grabcut_active:
@@ -1188,6 +1277,128 @@ class MyEditor:
             for (px, py) in self.grabcut_stroke:
                 cv2.circle(out, (int(px * scale), int(py * scale)), 3, color, -1)
         return out
+
+    # =========================================================== transform
+    def apply_now(self, title, function):
+        # Apply an instant transform (no dialog), e.g. mirror.
+        if not self.require_image():
+            return
+        try:
+            result = function(self.image)
+        except Exception as error:
+            self.show_error(title, error)
+            return
+        self.commit_image(result, title)
+
+    def start_rotation(self):
+        if not self.require_image():
+            return
+        self.clear_tool(rerender=False)
+        self.active_title = "Rotation"
+        self.active_callback = lambda image, v: processing.rotate(image, v["angle"])
+        self.active_controls = [{"type": "slider", "name": "angle",
+                                 "label": "Angle libre (°)", "from": -180, "to": 180,
+                                 "value": 0}]
+        self.control_widgets = {}
+        self.base_image = self.image.copy()
+        self.preview_base = self.make_preview_base(self.base_image)
+        slider = ft.Slider(min=-180, max=180, value=0, divisions=360, round=0,
+                           label="{value}", active_color=ACCENT,
+                           on_change=lambda e: self.schedule_preview())
+        self.control_widgets["angle"] = slider
+        self.panel_column.controls = [
+            ft.Text("Rotation", size=17, weight=ft.FontWeight.BOLD, color=TEXT),
+            ft.Text("Boutons rapides (90° / 180°) ou angle libre, puis Appliquer.",
+                    size=12, color=MUTED),
+            ft.Row([
+                ft.OutlinedButton("⟲ 90°", on_click=lambda e: self.apply_quarter(1)),
+                ft.OutlinedButton("⟳ 90°", on_click=lambda e: self.apply_quarter(3)),
+                ft.OutlinedButton("180°", on_click=lambda e: self.apply_quarter(2)),
+            ], spacing=6),
+            ft.Column([ft.Text("Angle libre (°)", size=12, color=MUTED), slider],
+                      spacing=0),
+            ft.Container(height=6),
+            self.action_buttons(self.apply_filter),
+        ]
+        self.right_panel.visible = True
+        self.update_preview()
+
+    def apply_quarter(self, steps):
+        try:
+            result = processing.rotate_quarter(self.base_image, steps)
+        except Exception as error:
+            self.show_error("Rotation", error)
+            return
+        self.commit_image(result, "Rotation")
+
+    # ---- crop ----
+    def start_crop(self):
+        if not self.require_image():
+            return
+        self.clear_tool(rerender=False)
+        self.crop_active = True
+        self.crop_rect = None
+        self.crop_rect_start = None
+        self.active_title = "Recadrage"
+        self.set_status("Tracez (glisser) le rectangle à conserver, puis Appliquer.")
+        self.panel_column.controls = [
+            ft.Text("Recadrage (Crop)", size=17, weight=ft.FontWeight.BOLD, color=TEXT),
+            ft.Text("Tracez un rectangle sur l'image (maintenez et glissez), "
+                    "puis Appliquer.", size=12, color=MUTED),
+            ft.Container(height=6),
+            self.action_buttons(self.apply_crop),
+        ]
+        self.right_panel.visible = True
+        self.render()
+
+    def crop_pan_start(self, e):
+        point = self.image_point_clamped(e)
+        if point is None:
+            return
+        self.crop_rect_start = point
+        self.crop_rect = None
+
+    def crop_pan_update(self, e):
+        point = self.image_point_clamped(e)
+        if point is None or self.crop_rect_start is None:
+            return
+        self.crop_rect = self._rect_from_points(self.crop_rect_start, point)
+        self.render()
+
+    def apply_crop(self, e):
+        if self.crop_rect is None or self.crop_rect[2] < 5 or self.crop_rect[3] < 5:
+            self.show_error("Recadrage", "Sélection trop petite. Tracez un rectangle.")
+            return
+        try:
+            result = processing.crop(self.image, self.crop_rect)
+        except Exception as error:
+            self.show_error("Recadrage", error)
+            return
+        self.commit_image(result, "Recadrage")
+
+    # ---- before / after compare ----
+    def toggle_compare(self):
+        if self.image is None or self.original_image is None:
+            self.set_status("Ouvrez une image (et faites une modification) d'abord.")
+            return
+        if self.compare_active:
+            self.compare_active = False
+            self.set_status("Comparaison désactivée.")
+            self.render()
+            return
+        self.clear_tool(rerender=False)
+        self.compare_active = True
+        self.compare_split = 0.5
+        self.set_status("Avant / Après : glissez sur l'image pour déplacer la séparation.")
+        self.render()
+
+    def compare_pan(self, e):
+        lp = getattr(e, "local_position", None)
+        if lp is None or self.image is None or self.view_scale <= 0:
+            return
+        dw = max(1.0, self.image.shape[1] * self.view_scale)
+        self.compare_split = min(max(lp.x / dw, 0.0), 1.0)
+        self.render()
 
     # =============================================================== keyboard
     def on_keyboard(self, e):
