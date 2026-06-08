@@ -21,7 +21,7 @@ import cv2
 import numpy as np
 import flet as ft
 
-from myeditor import processing, scanner
+from myeditor import processing, scanner, segmentation
 
 
 PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -91,6 +91,27 @@ class MyEditor:
         self.scan_mode_widget = None
         self.scan_preview_img = None
 
+        # --- grabcut (remove background) state ---
+        self.grabcut_active = False
+        self.grabcut_phase = None        # "select" | "refine"
+        self.grabcut_rect = None         # (x, y, w, h) in image coordinates
+        self.grabcut_rect_start = None
+        self.grabcut_source = None       # full-res BGR snapshot
+        self.grabcut_work = None         # downscaled copy GrabCut runs on
+        self.grabcut_scale = 1.0
+        self.grabcut_mask = None
+        self.grabcut_base_mask = None
+        self.grabcut_strokes = []        # committed strokes: list of (kind, points)
+        self.grabcut_redo = []
+        self.grabcut_stroke = []         # current stroke being drawn
+        self.grabcut_mode_widget = None
+        self.grabcut_brush_widget = None
+        self.grabcut_color_widget = None
+        self.grabcut_color_row = None
+        self.grabcut_preview_img = None
+        self.grabcut_undo_btn = None
+        self.grabcut_redo_btn = None
+
         self.file_picker = ft.FilePicker()
         self.build()
 
@@ -150,6 +171,9 @@ class MyEditor:
                          lambda e: self.start_points("perspective")),
                 self.nav("Crop & Straighten (Scan)", ft.Icons.DOCUMENT_SCANNER,
                          lambda e: self.start_scan()),
+                self.section("SÉLECTION"),
+                self.nav("Remove Background (GrabCut)", ft.Icons.CONTENT_CUT,
+                         lambda e: self.start_grabcut()),
                 self.section("ADVANCED"),
                 self.nav("Correction Gamma", ft.Icons.BRIGHTNESS_6, self.tool_gamma),
                 self.nav("Netteté (Unsharp)", ft.Icons.DETAILS, self.tool_unsharp),
@@ -269,7 +293,11 @@ class MyEditor:
             self.page.update()
             return
 
-        bgr = processing.as_bgr(img)
+        if img.ndim == 3 and img.shape[2] == 4:
+            # BGRA cut-out: show it over a checkerboard so transparency is visible.
+            bgr = segmentation.composite_checkerboard(img)
+        else:
+            bgr = processing.as_bgr(img)
         h, w = bgr.shape[:2]
         scale = min(self.stage_w / w, self.stage_h / h, 1.0)
         dw = max(1, int(w * scale))
@@ -281,6 +309,8 @@ class MyEditor:
             disp = self.draw_points(disp, scale)
         if self.scan_active and self.scan_corners:
             disp = self.draw_scan_corners(disp, scale)
+        if self.grabcut_active:
+            disp = self.draw_grabcut_overlay(disp, scale)
 
         self.canvas_image.src = encode_png(disp)
         self.canvas_image.width = dw
@@ -315,7 +345,11 @@ class MyEditor:
         if self.image is not None:
             self.undo_stack.append(self.image.copy())
             self.undo_stack = self.undo_stack[-UNDO_LIMIT:]
-        self.image = processing.as_bgr(result)
+        # Keep a BGRA cut-out as-is (transparency); otherwise normalise to BGR.
+        if result.ndim == 3 and result.shape[2] == 4:
+            self.image = result
+        else:
+            self.image = processing.as_bgr(result)
         if self.original_image is None:
             self.original_image = self.image.copy()
         self.preview_image = None
@@ -393,7 +427,12 @@ class MyEditor:
         if not path:
             return
         try:
-            processing.save_image(path, self.image)
+            alpha_formats = (".png", ".webp", ".tif", ".tiff")
+            if (self.image.ndim == 3 and self.image.shape[2] == 4
+                    and path.lower().endswith(alpha_formats)):
+                segmentation.save_cutout(path, self.image)
+            else:
+                processing.save_image(path, self.image)
             self.set_status(f"Enregistré : {path}")
         except Exception as error:
             self.show_error("Enregistrer", error)
@@ -430,6 +469,25 @@ class MyEditor:
         self.scan_drag_index = None
         self.scan_mode_widget = None
         self.scan_preview_img = None
+        self.grabcut_active = False
+        self.grabcut_phase = None
+        self.grabcut_rect = None
+        self.grabcut_rect_start = None
+        self.grabcut_source = None
+        self.grabcut_work = None
+        self.grabcut_scale = 1.0
+        self.grabcut_mask = None
+        self.grabcut_base_mask = None
+        self.grabcut_strokes = []
+        self.grabcut_redo = []
+        self.grabcut_stroke = []
+        self.grabcut_mode_widget = None
+        self.grabcut_brush_widget = None
+        self.grabcut_color_widget = None
+        self.grabcut_color_row = None
+        self.grabcut_preview_img = None
+        self.grabcut_undo_btn = None
+        self.grabcut_redo_btn = None
         self.preview_image = None
         self.right_panel.visible = False
         if rerender:
@@ -803,9 +861,26 @@ class MyEditor:
             return
         self.commit_image(result, "Crop & Straighten")
 
+    # ---- pan dispatch (scanner corner drag vs grabcut rect / brush) ----
     def on_pan_start(self, e):
-        if not self.scan_active:
-            return
+        if self.scan_active:
+            self.scan_pan_start(e)
+        elif self.grabcut_active:
+            self.grabcut_pan_start(e)
+
+    def on_pan_update(self, e):
+        if self.scan_active:
+            self.scan_pan_update(e)
+        elif self.grabcut_active:
+            self.grabcut_pan_update(e)
+
+    def on_pan_end(self, e):
+        if self.scan_active:
+            self.scan_drag_index = None
+        elif self.grabcut_active:
+            self.grabcut_pan_end(e)
+
+    def scan_pan_start(self, e):
         lp = getattr(e, "local_position", None)
         if lp is None or self.view_scale <= 0:
             return
@@ -819,21 +894,300 @@ class MyEditor:
                 best, best_dist = index, dist
         self.scan_drag_index = best
 
-    def on_pan_update(self, e):
-        if not self.scan_active or self.scan_drag_index is None:
+    def scan_pan_update(self, e):
+        if self.scan_drag_index is None:
             return
-        lp = getattr(e, "local_position", None)
-        if lp is None or self.view_scale <= 0 or self.image is None:
+        point = self.image_point_clamped(e)
+        if point is None:
             return
-        h, w = self.image.shape[:2]
-        x = min(max(lp.x / self.view_scale, 0), w - 1)
-        y = min(max(lp.y / self.view_scale, 0), h - 1)
-        self.scan_corners[self.scan_drag_index] = [float(x), float(y)]
+        self.scan_corners[self.scan_drag_index] = [point[0], point[1]]
         self.render()
         self.update_scan_preview()
 
-    def on_pan_end(self, e):
-        self.scan_drag_index = None
+    def image_point_clamped(self, e):
+        lp = getattr(e, "local_position", None)
+        if lp is None or self.view_scale <= 0 or self.image is None:
+            return None
+        h, w = self.image.shape[:2]
+        x = min(max(lp.x / self.view_scale, 0), w - 1)
+        y = min(max(lp.y / self.view_scale, 0), h - 1)
+        return (float(x), float(y))
+
+    # =============================================================== grabcut
+    @staticmethod
+    def _rect_from_points(start, end):
+        x0, y0 = start
+        x1, y1 = end
+        x, y = int(min(x0, x1)), int(min(y0, y1))
+        return (x, y, int(abs(x1 - x0)), int(abs(y1 - y0)))
+
+    @staticmethod
+    def _grabcut_downscale(image, max_width=800):
+        width = image.shape[1]
+        if width <= max_width:
+            return image, 1.0
+        scale = max_width / width
+        size = (int(width * scale), int(image.shape[0] * scale))
+        return cv2.resize(image, size, interpolation=cv2.INTER_AREA), scale
+
+    @staticmethod
+    def _scale_rect(rect, scale):
+        x, y, width, height = rect
+        return (int(x * scale), int(y * scale),
+                max(1, int(width * scale)), max(1, int(height * scale)))
+
+    def start_grabcut(self):
+        if not self.require_image():
+            return
+        self.clear_tool(rerender=False)
+        self.grabcut_active = True
+        self.grabcut_phase = "select"
+        self.active_title = "Remove Background"
+        self.grabcut_rect = None
+        self.grabcut_rect_start = None
+        self.set_status("Étape 1 : tracez (glisser) un rectangle autour du sujet.")
+        self.panel_column.controls = [
+            ft.Text("Remove Background", size=17, weight=ft.FontWeight.BOLD, color=TEXT),
+            ft.Text("Étape 1 : tracez un rectangle autour du sujet à conserver "
+                    "(maintenez et glissez sur l'image).", size=12, color=MUTED),
+            ft.Container(height=6),
+            ft.Row([ft.TextButton("Annuler", on_click=lambda e: self.clear_tool())],
+                   alignment=ft.MainAxisAlignment.END),
+        ]
+        self.right_panel.visible = True
+        self.render()
+
+    def grabcut_pan_start(self, e):
+        point = self.image_point_clamped(e)
+        if point is None:
+            return
+        if self.grabcut_phase == "select":
+            self.grabcut_rect_start = point
+            self.grabcut_rect = None
+        elif self.grabcut_phase == "refine":
+            self.grabcut_stroke = [point]
+            self.render()
+
+    def grabcut_pan_update(self, e):
+        point = self.image_point_clamped(e)
+        if point is None:
+            return
+        if self.grabcut_phase == "select" and self.grabcut_rect_start is not None:
+            self.grabcut_rect = self._rect_from_points(self.grabcut_rect_start, point)
+            self.render()
+        elif self.grabcut_phase == "refine":
+            self.grabcut_stroke.append(point)
+            self.render()
+
+    def grabcut_pan_end(self, e):
+        if self.grabcut_phase == "select":
+            self.finish_grabcut_selection()
+        elif self.grabcut_phase == "refine":
+            self.commit_grabcut_stroke()
+
+    def finish_grabcut_selection(self):
+        rect = self.grabcut_rect
+        if rect is None or rect[2] < 10 or rect[3] < 10:
+            self.grabcut_rect = None
+            self.set_status("Sélection trop petite. Recommencez le rectangle.")
+            self.render()
+            return
+        self.set_status("Séparation du sujet et du fond…")
+        self.page.update()
+        source = processing.as_bgr(self.image)
+        work, scale = self._grabcut_downscale(source)
+        try:
+            mask = segmentation.grabcut_mask(work, self._scale_rect(rect, scale))
+        except Exception as error:
+            self.show_error("Remove Background", error)
+            self.clear_tool()
+            return
+        self.grabcut_source = source
+        self.grabcut_work = work
+        self.grabcut_scale = scale
+        self.grabcut_mask = mask
+        self.grabcut_base_mask = mask.copy()
+        self.grabcut_strokes = []
+        self.grabcut_redo = []
+        self.grabcut_stroke = []
+        self.grabcut_phase = "refine"
+        self.build_grabcut_panel()
+        self.update_grabcut_preview()
+
+    def build_grabcut_panel(self):
+        self.grabcut_mode_widget = ft.Dropdown(
+            label="Sortie", value="Transparent (PNG)",
+            options=[ft.DropdownOption(text=t)
+                     for t in ("Transparent (PNG)", "Couleur de fond")],
+            on_select=lambda e: self.on_grabcut_mode_change(),
+        )
+        self.grabcut_color_widget = ft.Dropdown(
+            label="Couleur de fond", value="Blanc",
+            options=[ft.DropdownOption(text=t)
+                     for t in ("Blanc", "Noir", "Gris", "Vert", "Bleu", "Rouge")],
+            on_select=lambda e: self.update_grabcut_preview(),
+        )
+        self.grabcut_color_row = ft.Container(content=self.grabcut_color_widget,
+                                              visible=False)
+        self.grabcut_brush_widget = ft.Dropdown(
+            label="Pinceau de retouche", value="Effacer le fond",
+            options=[ft.DropdownOption(text=t)
+                     for t in ("Effacer le fond", "Restaurer le sujet")],
+        )
+        self.grabcut_undo_btn = ft.TextButton(
+            "Annuler retouche", icon=ft.Icons.UNDO, disabled=True,
+            on_click=lambda e: self.grabcut_undo_touchup())
+        self.grabcut_redo_btn = ft.TextButton(
+            "Rétablir", icon=ft.Icons.REDO, disabled=True,
+            on_click=lambda e: self.grabcut_redo_touchup())
+        self.grabcut_preview_img = ft.Image(src=BLANK_PNG, width=260,
+                                            fit=ft.BoxFit.CONTAIN, gapless_playback=True)
+        self.panel_column.controls = [
+            ft.Text("Remove Background", size=17, weight=ft.FontWeight.BOLD, color=TEXT),
+            ft.Text("Étape 2 : choisissez la sortie. Pour corriger, choisissez un "
+                    "pinceau et glissez sur l'image.", size=12, color=MUTED),
+            self.grabcut_mode_widget,
+            self.grabcut_color_row,
+            ft.Container(content=self.grabcut_preview_img, alignment=ft.Alignment.CENTER),
+            self.grabcut_brush_widget,
+            ft.Row([self.grabcut_undo_btn, self.grabcut_redo_btn], spacing=6),
+            ft.Container(height=6),
+            self.action_buttons(self.apply_grabcut),
+        ]
+        self.right_panel.visible = True
+        self.page.update()
+
+    def on_grabcut_mode_change(self):
+        self.grabcut_color_row.visible = (self.grabcut_mode_value() == "color")
+        self.update_grabcut_preview()
+        self.page.update()
+
+    def grabcut_mode_value(self):
+        widget = self.grabcut_mode_widget
+        return "color" if (widget and widget.value == "Couleur de fond") else "transparent"
+
+    def grabcut_brush_value(self):
+        widget = self.grabcut_brush_widget
+        return "fg" if (widget and widget.value == "Restaurer le sujet") else "bg"
+
+    def grabcut_fill_color(self):
+        mapping = {"Blanc": (255, 255, 255), "Noir": (0, 0, 0), "Gris": (128, 128, 128),
+                   "Vert": (0, 255, 0), "Bleu": (255, 0, 0), "Rouge": (0, 0, 255)}
+        widget = self.grabcut_color_widget
+        return mapping.get(widget.value if widget else "Blanc", (255, 255, 255))
+
+    def grabcut_brush_radius(self):
+        screen_px = 10
+        return max(2, int(screen_px / max(self.view_scale, 1e-6) * self.grabcut_scale))
+
+    def full_mask(self):
+        if self.grabcut_mask is None:
+            return None
+        if self.grabcut_scale == 1.0:
+            mask = self.grabcut_mask
+        else:
+            h, w = self.image.shape[:2]
+            mask = cv2.resize(self.grabcut_mask, (w, h), interpolation=cv2.INTER_LINEAR)
+        return segmentation.refine_edge(mask)
+
+    def build_grabcut_result(self):
+        image = self.grabcut_source
+        mask = self.full_mask()
+        if self.grabcut_mode_value() == "color":
+            return segmentation.fill_background(image, mask, self.grabcut_fill_color())
+        return segmentation.cutout_transparent(image, mask)
+
+    def build_grabcut_display(self):
+        work = self.grabcut_work
+        mask = segmentation.refine_edge(self.grabcut_mask)
+        if self.grabcut_mode_value() == "color":
+            return segmentation.fill_background(work, mask, self.grabcut_fill_color())
+        return segmentation.composite_checkerboard(
+            segmentation.cutout_transparent(work, mask))
+
+    def update_grabcut_preview(self):
+        if not self.grabcut_active or self.grabcut_phase != "refine":
+            return
+        try:
+            display = self.build_grabcut_display()
+        except Exception as error:
+            self.set_status(str(error))
+            return
+        h, w = self.image.shape[:2]
+        self.preview_image = cv2.resize(display, (w, h), interpolation=cv2.INTER_NEAREST)
+        dh, dw = display.shape[:2]
+        scale = min(260 / dw, 260 / dh, 1.0)
+        thumb = cv2.resize(display, (max(1, int(dw * scale)), max(1, int(dh * scale))),
+                           interpolation=cv2.INTER_AREA)
+        if self.grabcut_preview_img is not None:
+            self.grabcut_preview_img.src = encode_png(thumb)
+        self.render()
+
+    def commit_grabcut_stroke(self):
+        if not self.grabcut_stroke:
+            return
+        self.grabcut_strokes.append((self.grabcut_brush_value(), self.grabcut_stroke))
+        self.grabcut_redo = []
+        self.grabcut_stroke = []
+        self.recompute_grabcut_mask()
+
+    def recompute_grabcut_mask(self):
+        scale = self.grabcut_scale
+        fg = [(x * scale, y * scale) for kind, pts in self.grabcut_strokes
+              if kind == "fg" for x, y in pts]
+        bg = [(x * scale, y * scale) for kind, pts in self.grabcut_strokes
+              if kind == "bg" for x, y in pts]
+        if not fg and not bg:
+            self.grabcut_mask = self.grabcut_base_mask.copy()
+        else:
+            try:
+                self.grabcut_mask = segmentation.refine_mask(
+                    self.grabcut_work, self.grabcut_base_mask, fg, bg,
+                    radius=self.grabcut_brush_radius(),
+                    keep_rect=self._scale_rect(self.grabcut_rect, scale))
+            except Exception as error:
+                self.show_error("Remove Background", error)
+                return
+        self.update_grabcut_history_buttons()
+        self.update_grabcut_preview()
+
+    def grabcut_undo_touchup(self):
+        if not self.grabcut_strokes:
+            return
+        self.grabcut_redo.append(self.grabcut_strokes.pop())
+        self.recompute_grabcut_mask()
+
+    def grabcut_redo_touchup(self):
+        if not self.grabcut_redo:
+            return
+        self.grabcut_strokes.append(self.grabcut_redo.pop())
+        self.recompute_grabcut_mask()
+
+    def update_grabcut_history_buttons(self):
+        if self.grabcut_undo_btn is not None:
+            self.grabcut_undo_btn.disabled = not self.grabcut_strokes
+            self.grabcut_redo_btn.disabled = not self.grabcut_redo
+            self.page.update()
+
+    def apply_grabcut(self, e):
+        try:
+            result = self.build_grabcut_result()
+        except Exception as error:
+            self.show_error("Remove Background", error)
+            return
+        self.commit_image(result, "Remove Background")
+
+    def draw_grabcut_overlay(self, disp, scale):
+        out = disp.copy()
+        if self.grabcut_phase == "select" and self.grabcut_rect:
+            x, y, w, h = self.grabcut_rect
+            cv2.rectangle(out, (int(x * scale), int(y * scale)),
+                          (int((x + w) * scale), int((y + h) * scale)), SCAN_GREEN, 2)
+        if self.grabcut_stroke:
+            color = (85, 221, 51) if self.grabcut_brush_value() == "fg" else (85, 85, 255)
+            for (px, py) in self.grabcut_stroke:
+                cv2.circle(out, (int(px * scale), int(py * scale)), 3, color, -1)
+        return out
 
     # =============================================================== keyboard
     def on_keyboard(self, e):
