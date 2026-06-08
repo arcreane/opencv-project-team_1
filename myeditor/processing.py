@@ -307,3 +307,55 @@ def connected_components(image):
     colors[0] = 0
     result = colors[labels]
     return result.astype(np.uint8)
+
+
+def flip(image, horizontal=True):
+    # Mirror the image. Channel count is preserved (BGR or BGRA).
+    return cv2.flip(image, 1 if horizontal else 0)
+
+
+def rotate_quarter(image, steps):
+    # Rotate by a multiple of 90 degrees without any quality loss.
+    # steps counts 90-degree counter-clockwise turns.
+    steps = int(steps) % 4
+    if steps == 0:
+        return image.copy()
+    code = {
+        1: cv2.ROTATE_90_COUNTERCLOCKWISE,
+        2: cv2.ROTATE_180,
+        3: cv2.ROTATE_90_CLOCKWISE,
+    }[steps]
+    return cv2.rotate(image, code)
+
+
+def rotate(image, angle):
+    # Free rotation by any angle. The output canvas grows so no corner is clipped.
+    # The exposed corners are filled with black (or transparent for a BGRA cut-out).
+    height, width = image.shape[:2]
+    center = (width / 2.0, height / 2.0)
+    matrix = cv2.getRotationMatrix2D(center, float(angle), 1.0)
+    cos = abs(matrix[0, 0])
+    sin = abs(matrix[0, 1])
+    new_width = int(height * sin + width * cos)
+    new_height = int(height * cos + width * sin)
+    matrix[0, 2] += new_width / 2.0 - center[0]
+    matrix[1, 2] += new_height / 2.0 - center[1]
+    if image.ndim == 3 and image.shape[2] == 4:
+        border = (0, 0, 0, 0)
+    else:
+        border = (0, 0, 0)
+    return cv2.warpAffine(image, matrix, (max(1, new_width), max(1, new_height)),
+                          borderValue=border)
+
+
+def crop(image, rect):
+    # Keep only the rectangle (x, y, w, h), clamped to the image bounds.
+    x, y, width, height = (int(round(v)) for v in rect)
+    img_h, img_w = image.shape[:2]
+    x0 = max(0, x)
+    y0 = max(0, y)
+    x1 = min(img_w, x + width)
+    y1 = min(img_h, y + height)
+    if x1 - x0 < 1 or y1 - y0 < 1:
+        raise ValueError("Crop area is too small")
+    return image[y0:y1, x0:x1].copy()
