@@ -1,15 +1,26 @@
 # MyEditor Final Report
 
+Multimedia Application Final Project 2026  
+ISEP - École d'ingénieurs du numérique
+
+Team members:
+
+- Zijie Huang
+- Mahad MOUMINE ALI
+- Rayene Khader
+- Helton DO NASCIMENTO RODRIGUES BARBOSA
+
 ## 1. Introduction
 
 MyEditor is our multimedia final project. It is a desktop image editor inspired
-by simple GIMP-like workflows. The goal was not to write isolated OpenCV
-exercises, but to build an application where a user can open an image, choose a
-tool, change parameters, preview the result, apply or cancel the operation, and
-save the edited image.
+by simple GIMP-like workflows. The objective was to build a complete
+OpenCV-based application rather than a set of isolated command-line exercises.
+The project prioritised a stable and demonstrable application workflow,
+including image loading, parameter adjustment, live preview, application of
+effects, undo/redo and export.
 
-The final version uses Python, Flet, OpenCV, NumPy and pytest. Flet is used for
-the desktop graphical interface. OpenCV and NumPy are used for image operations.
+The final version uses Python, Flet, OpenCV, NumPy and pytest. Flet provides the
+desktop graphical interface. OpenCV and NumPy are used for image operations.
 Pytest is used for functional tests on processing and helper functions.
 
 ## 2. Architecture
@@ -26,15 +37,16 @@ operations stay in separate functions.
 | `myeditor/scanner.py` | Document scan / Crop & Straighten helper functions. |
 | `myeditor/segmentation.py` | GrabCut background removal and mask helper functions. |
 | `tests/` | Pytest tests for processing functions and helper modules. |
-| `samples/` | Sample images used for testing and demonstration. |
+| `samples/` | Sample images used for testing and live demonstration. |
 
 The main GUI class is `MyEditor` in `myeditor/app.py`. It does not directly
 implement every OpenCV algorithm. It collects input from buttons, sliders,
 dropdowns or mouse clicks, then calls functions from `processing.py`,
 `scanner.py` or `segmentation.py`.
 
-OpenCV images are stored as NumPy arrays in BGR format. The GUI converts images
-only when they need to be displayed in the Flet image component.
+OpenCV stores colour images as NumPy arrays, usually in BGR channel order. The
+GUI keeps this representation for processing and encodes images as PNG bytes
+when displaying them in Flet.
 
 ## 3. GUI Workflow and Image State
 
@@ -61,13 +73,13 @@ The important state variables are:
 | `base_image` | Full-size image used when a tool is finally applied. |
 | `preview_base` | Smaller image used for faster live preview. |
 
-The `commit_image()` method is the central part of the editing workflow. Before
-replacing the current image, it saves the previous image in `undo_stack`. It
-then updates `image`, clears `preview_image`, clears the redo history after a
-new edit, closes the active tool panel, updates the Undo/Redo buttons, updates
-the status message and renders the image again.
+The `commit_image()` method is the central part of the editing workflow. When
+the user applies a result, it stores the previous image in `undo_stack`, updates
+the current `image`, clears `preview_image`, clears `redo_stack` after a new
+edit, closes the active tool panel, updates the buttons/status and re-renders
+the image. This makes Apply, Reset, Undo and Redo behave consistently.
 
-Reset copies `original_image` back into the current image through the same
+Reset copies `original_image` back into the current image through this same
 commit workflow. Before/After comparison uses the original image and current
 image together so the user can visually compare the edit result.
 
@@ -102,8 +114,8 @@ how strong the local contrast enhancement is.
 ### 4.3 Morphology
 
 Morphology changes bright and dark structures in a grayscale image. The editor
-supports dilation, erosion, opening, closing and gradient through
-`cv2.morphologyEx`.
+builds a kernel with `cv2.getStructuringElement` and supports dilation, erosion,
+opening, closing and gradient through `cv2.morphologyEx`.
 
 - Dilate expands bright regions.
 - Erode shrinks bright regions.
@@ -140,42 +152,34 @@ for example when straightening a tilted document or rectangular object.
 
 ### 4.6 Panorama Stitching
 
-The panorama tool lets the user choose multiple images. It uses OpenCV's
-Stitcher to find matching visual features and combine overlapping images. This
-works best when the images have enough overlap and clear texture.
+The panorama tool lets the user choose multiple images. It uses
+`cv2.Stitcher_create` to find matching visual features and combine overlapping
+images. This works best when the images have enough overlap and clear texture.
 
 If stitching fails, the application catches the error and shows a clear message
 instead of crashing. This is important because panorama stitching can fail when
 there are not enough reliable matches.
 
-## 5. Advanced and Extra Features
+## 5. Advanced Features
 
-The application includes more tools than the minimum requirements. For the oral
-demo, the strongest advanced features are Cartoon Effect, Hough Lines and
-Remove Background with GrabCut. Other tools are still available in the
-interface, but we do not present them as separate major research features.
+For the oral demo and written report, the project focuses on three advanced
+features. These tools are visual, easy to demonstrate and different from the
+six mandatory feature groups.
 
 | Feature | Implementation idea and use |
 | --- | --- |
-| Gamma correction | Uses a lookup table with `cv2.LUT` to brighten or darken midtones. |
-| Unsharp mask | Uses Gaussian blur and weighted addition to make details sharper. |
-| Bilateral denoising | Uses `cv2.bilateralFilter` to smooth noise while keeping edges more visible. |
-| K-means color quantization | Uses `cv2.kmeans` to reduce the number of colors in an image. |
-| Vignette | Builds a Gaussian mask and darkens the border area. |
 | Cartoon effect | Combines bilateral filtering with an adaptive edge mask. |
-| Pencil sketch | Uses grayscale inversion, blur and division blending to create a sketch-like result. |
-| ORB keypoints | Uses `cv2.ORB_create` and draws detected keypoints on the image. |
 | Hough lines | Uses Canny edges and `cv2.HoughLinesP` to draw straight line segments. |
-| Connected components | Uses Otsu thresholding and `cv2.connectedComponents` to color separate regions. |
-| Crop & Straighten / document scan | Detects a document-like quadrilateral, applies perspective correction and offers B&W, color or gray output. |
 | Remove Background / GrabCut | Uses GrabCut with an initial rectangle and optional brush refinement. |
-| Rotation | Supports quick 90/180 degree rotation and free-angle rotation. |
-| Horizontal mirror | Uses `cv2.flip` to mirror the image left/right. |
-| Vertical mirror | Uses `cv2.flip` to mirror the image top/bottom. |
-| Crop | Lets the user draw a rectangle and keep only that region. |
 
-The project does not implement a separate Magic Wand or Flood Fill selection
-tool. Background removal is handled by the GrabCut workflow.
+This is not a separate Magic Wand or Flood Fill tool; the implemented selection
+feature is based on GrabCut.
+
+Some smaller tools are also available in the interface, such as gamma
+correction, unsharp mask, bilateral denoising, K-means color quantization,
+vignette, pencil sketch, ORB keypoints, connected components, rotation, mirror
+and crop. They support the editor workflow, but they are not treated as the main
+advanced features of the project.
 
 ## 6. Screenshots and Demo Outputs
 
@@ -193,16 +197,11 @@ slides.
 | Hough lines | `docs/demo_outputs/06_hough_lines.png` |
 | Document source image | `docs/demo_outputs/07_document_perspective_source.png` |
 | Panorama result | `docs/demo_outputs/08_panorama_result.png` |
+| Flet GUI with Canny preview | `docs/demo_outputs/09_gui_canny_preview.png` |
 
-Screenshots still to add before exporting the final submitted PDF:
-
-- [TODO: Insert screenshot of the main interface after opening an image]
-- [TODO: Insert screenshot of Canny preview with the right-side parameters]
-- [TODO: Insert screenshot of Thresholding or CLAHE result]
-- [TODO: Insert screenshot of Morphology result]
-- [TODO: Insert screenshot of Perspective or Crop & Straighten result]
-- [TODO: Insert screenshot of an advanced effect such as Cartoon, Hough Lines or ORB]
-- [TODO: Insert screenshot of the Before/After comparison mode]
+The GUI screenshot shows the real Flet interface with a sample image loaded,
+the Canny tool selected, live preview visible in the central area and parameter
+controls on the right panel.
 
 ## 7. Testing
 
@@ -218,27 +217,24 @@ functions and obvious regressions.
 
 Test command: `python3 -m pytest`
 
-At the last check, all tests passed.
+At the latest local check, 23 tests passed.
 
 ## 8. Project Management and Contributions
 
 We used Git branches and pull requests to separate work. The contribution table
-below follows the visible repository history and should be confirmed by the team
-before final submission.
+below follows the visible repository history and the team-provided contribution
+descriptions.
 
 | Member | Main contribution |
 | --- | --- |
-| Zijie Huang | Focused on GUI workflow documentation, image state management explanation, Open/Save/Reset and Undo/Redo workflow, user instructions, README/report polishing, and code review preparation. |
-| Uncher | Mainly contributed to GrabCut background removal and related selection workflow. |
-| Rayene Khader | Mainly contributed to the Flet interface modernization, transform tools and before/after comparison work. |
-| BrendowDevX | Mainly contributed to early project structure and core image-processing work. |
+| Zijie Huang | GUI workflow notes, image state explanation, Open/Save/Reset and Undo/Redo documentation, README and report polishing. |
+| Mahad MOUMINE ALI | Crop & Straighten branch work, GrabCut background removal and segmentation workflow. |
+| Rayene Khader | Flet interface modernization, transform tools and before/after comparison. |
+| Helton DO NASCIMENTO RODRIGUES BARBOSA | Early project structure and support for core processing work. |
 
 The main project management choice was to keep image-processing functions
 separate from GUI code. This made it easier for team members to work on
 different parts and also made code review easier.
-
-TODO for the team: confirm the final wording of teammate names and
-contributions before submitting the PDF.
 
 ## 9. Known Limitations
 
@@ -248,6 +244,7 @@ contributions before submitting the PDF.
 - K-means and other heavier tools can be slower on very large images.
 - The project is a student image editor and is not as complete as professional tools such as GIMP or Photoshop.
 - GUI testing is mostly manual.
+- GUI interaction is mainly tested manually because automated testing of mouse-based Flet interactions is more complex.
 
 ## 10. Future Improvements
 
@@ -260,9 +257,10 @@ contributions before submitting the PDF.
 
 ## 11. Conclusion
 
-MyEditor meets the main requirements of the project. It is a real desktop image
-editor with a GUI workflow, it implements all six mandatory OpenCV features, and
-it includes several extra tools. The current report focuses on what is actually
-implemented in the Flet version of the application. The code remains organized
-around a simple idea: `app.py` handles user interaction, and the processing
-modules handle image operations.
+MyEditor meets the main project requirements. It provides a desktop GUI
+workflow, implements all six mandatory OpenCV feature groups, and includes
+advanced tools such as Cartoon Effect, Hough Lines Detection and GrabCut
+background removal. The current report focuses on what is actually implemented
+in the Flet version of the application. Separating GUI code from processing
+modules makes the project easier to test, maintain and explain during code
+review.
