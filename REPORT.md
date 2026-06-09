@@ -1,154 +1,225 @@
 # MyEditor Report
 
-## 1. Introduction
+## 1. Project Goal
 
-MyEditor is a small desktop image editor inspired by tools such as GIMP. The
-goal was to build a real application, not only separate image-processing
-scripts. The user can load an image, preview operations with GUI controls, apply
-edits, undo or redo changes, reset the image and save the final result.
+MyEditor is a desktop image editor built with Python, Flet and OpenCV. The goal
+was to make a small GIMP-like application, not a set of command-line scripts.
+The user can open an image, choose an operation, change parameters, preview the
+result, apply or cancel the change, and save the final image.
 
-The project uses Flet for the graphical interface and OpenCV for the
-image-processing algorithms. OpenCV images are stored as NumPy arrays in BGR
-format. The GUI converts them only when they need to be displayed.
+We focused on a stable demo first. The final version covers the six mandatory
+OpenCV features from the project brief and three advanced features that are easy
+to show during the presentation: Cartoon Effect, Hough Lines Detection and
+Remove Background with GrabCut.
 
-## 2. Architecture
+## 2. Technologies Used
 
-The code is split into a few small modules.
-
-| File | Role |
+| Tool | Use in the project |
 | --- | --- |
-| `myeditor/app.py` | Flet window, left tool panel, image display, live preview, mouse tools, status messages and undo/redo |
-| `myeditor/processing.py` | Main OpenCV functions for filters, transforms, stitching and advanced features |
-| `myeditor/scanner.py` | Document detection and crop/straighten helpers |
-| `myeditor/segmentation.py` | GrabCut background removal and mask helpers |
+| Python | Main programming language |
+| Flet | Desktop graphical interface |
+| OpenCV | Image processing algorithms |
+| NumPy | Image arrays and numerical operations |
+| Pytest | Basic tests for processing functions |
+
+OpenCV stores images as NumPy arrays in BGR format. The GUI keeps this format
+for processing and only converts the image when it needs to display it.
+
+## 3. Application Structure
+
+The code is separated into small files so each part can be tested and explained.
+
+| File | Responsibility |
+| --- | --- |
 | `main.py` | Starts the application |
+| `myeditor/app.py` | Flet interface, image display, buttons, tool panels, mouse interaction, status messages, undo and redo |
+| `myeditor/processing.py` | Main OpenCV functions: thresholding, histogram equalization, morphology, Canny, transforms, stitching and effects |
+| `myeditor/scanner.py` | Document detection and crop/straighten helper functions |
+| `myeditor/segmentation.py` | GrabCut background removal and mask refinement |
+| `tests/` | Tests for processing, scanner and segmentation code |
 
-This separation makes the code easier to explain in the code review. GUI code
-collects parameters and displays images. Processing code receives an image array
-and returns a new image array.
+The GUI does not contain the image-processing algorithms directly. It collects
+the user input, calls a function from the processing modules, and then displays
+the returned image. This made the project easier to divide between members.
 
-The most important image states in the GUI are:
+## 4. GUI Workflow
 
-- `original_image`: the first image loaded by the user, used by Reset
+The interface has a top toolbar, a left tool menu, a central image area and a
+right parameter panel. The basic workflow is:
+
+1. Open an image.
+2. Choose a tool.
+3. Adjust parameters with sliders or dropdowns.
+4. Check the preview.
+5. Apply the result or cancel it.
+6. Save the edited image.
+
+The application keeps several image states:
+
+- `original_image`: the image loaded from disk, used for Reset
 - `image`: the current edited image
-- `preview_image`: a temporary result shown before Apply
-- `undo_stack` and `redo_stack`: previous image states for Undo and Redo
+- `preview_image`: a temporary preview before Apply
+- `undo_stack` and `redo_stack`: previous image states
 
-## 3. Core Features
+For parameter-based tools, the preview is calculated on a smaller copy of the
+image so the sliders stay responsive. When the user clicks Apply, the same
+operation is applied to the full image.
 
-### Thresholding
+## 5. Mandatory Features
 
-Three thresholding modes are implemented:
+### 5.1 Thresholding
 
-- Binary thresholding with a user-controlled intensity value
+The editor supports three thresholding methods:
+
+- Binary thresholding with a manual threshold value
 - Otsu thresholding, where OpenCV chooses the threshold automatically
-- Adaptive thresholding, where the threshold is computed locally for each region
+- Adaptive thresholding, where the threshold is calculated locally
 
-The output is converted back to BGR so it can be displayed and saved like the other operations.
+The image is converted to grayscale for the operation, then converted back to a
+displayable image.
 
-### Histogram Equalization
+### 5.2 Histogram Equalization
 
-Global equalization is applied to the luminance channel in YCrCb color space. This improves contrast without equalizing each color channel separately, which would create strong color shifts.
+Two contrast tools are included:
 
-CLAHE is applied to the lightness channel in LAB color space. The user can control the clip limit and tile size. CLAHE is useful when the image has uneven lighting.
+- Global histogram equalization
+- CLAHE
 
-### Morphology
+Global equalization is applied to the luminance channel instead of directly to
+each BGR channel. This gives better contrast while avoiding strong color shifts.
+CLAHE is useful for images where lighting is not uniform, because it improves
+contrast locally.
 
-The application supports dilation, erosion, opening, closing and gradient. The user can choose the kernel size and shape: rectangle, ellipse or cross. The operation is applied to the grayscale image because morphology is usually easier to understand on intensity or binary structures.
+### 5.3 Morphology
 
-### Canny Edge Detection
+The morphology tool supports dilation, erosion, opening, closing and gradient.
+The user can choose the kernel size and the kernel shape: rectangle, ellipse or
+cross. These operations are useful for removing small noise, connecting shapes,
+filling gaps or highlighting borders.
 
-Canny edge detection exposes the two hysteresis thresholds and the aperture size. The output is a black-and-white edge map converted to BGR for display.
+### 5.4 Canny Edge Detection
 
-### Geometric Transforms
+Canny edge detection exposes the two threshold values and the aperture size. The
+output is a black-and-white edge image, converted back into a displayable format
+for the GUI.
 
-Affine transform uses three user-selected points. The points are selected directly on the canvas, then OpenCV maps them to a straight rectangle-like output.
+### 5.5 Geometric Transforms
 
-Perspective warp uses four user-selected points. The program orders the corners automatically and uses a perspective matrix to straighten the selected area.
+The editor includes two point-based transforms:
 
-### Panorama Stitching
+- Affine transform from three selected points
+- Perspective transform from four selected points
 
-The panorama tool loads several images and uses OpenCV's stitcher. If the stitching status is not successful, the application shows a clear error message instead of crashing.
+The points are selected directly on the image. For perspective transform, the
+program orders the four corners before calling OpenCV, so the selected area can
+be straightened more reliably.
 
-## 4. Advanced Features
+### 5.6 Panorama Stitching
 
-The project focuses on three advanced features for the oral demo. These were
-chosen because the visual result is clear and the code can be explained in a
-short code review.
+The panorama tool lets the user choose several overlapping images and uses
+OpenCV's stitcher to build a panorama. If stitching fails, the program shows an
+error message instead of closing or crashing. This is important because panorama
+stitching depends a lot on the input images.
 
-| Feature | Technique |
+## 6. Advanced Features
+
+### 6.1 Cartoon Effect
+
+The cartoon effect combines smoothing and edge extraction. A bilateral filter
+keeps strong edges while smoothing colors. Then an adaptive threshold creates an
+edge mask. The final image keeps the simplified colors and visible outlines.
+
+### 6.2 Hough Lines Detection
+
+This feature first detects edges with Canny, then uses the probabilistic Hough
+transform to find straight line segments. The detected lines are drawn on top of
+the original image. It is useful for showing structure in buildings, documents
+or other images with strong straight edges.
+
+### 6.3 Remove Background with GrabCut
+
+The Remove Background tool uses GrabCut. The user first draws a rectangle around
+the subject. OpenCV separates probable foreground and background. The user can
+then refine the mask with brush strokes to erase background or restore parts of
+the subject. The result can be saved with transparency when using PNG.
+
+## 7. Results and Demo Images
+
+The `samples/` folder contains input images used for testing and demonstration.
+The `docs/demo_outputs/` folder contains generated examples for the report.
+
+| Example | File |
 | --- | --- |
-| Cartoon Effect | Bilateral filtering for smooth colors, then adaptive thresholding for edges |
-| Hough Lines Detection | Canny edges followed by probabilistic Hough transform |
-| Remove Background | GrabCut initialized by a rectangle, then refined with brush strokes |
-
-Undo and Redo are kept in the GUI section because they are state management
-features, not OpenCV algorithms.
-
-## 5. GUI and User Experience
-
-The application opens into a real desktop window with a top bar, a left tool
-panel, a main image display and a right-side parameter panel. Slider-based
-operations show a live preview. For large images, the preview is computed on a
-downscaled copy so the sliders stay responsive; when the user clicks Apply, the
-operation is applied to the full-resolution image.
-
-Mouse interaction is used for geometric transforms. The selected points are drawn on the canvas so the user can see the current selection before the transform is applied.
-
-## 6. Results
-
-The `samples/` folder contains images used during development and demo preparation. The `docs/demo_outputs/` folder contains generated output examples:
-
-| Result | File |
-| --- | --- |
-| Original sample | `docs/demo_outputs/01_original.png` |
+| Original image | `docs/demo_outputs/01_original.png` |
 | Otsu thresholding | `docs/demo_outputs/02_otsu_threshold.png` |
-| CLAHE contrast enhancement | `docs/demo_outputs/03_clahe.png` |
+| CLAHE | `docs/demo_outputs/03_clahe.png` |
 | Canny edge detection | `docs/demo_outputs/04_canny.png` |
 | Cartoon effect | `docs/demo_outputs/05_cartoon.png` |
-| Hough line detection | `docs/demo_outputs/06_hough_lines.png` |
-| Tilted document sample | `docs/demo_outputs/07_document_perspective_source.png` |
-| Panorama stitching result | `docs/demo_outputs/08_panorama_result.png` |
+| Hough lines | `docs/demo_outputs/06_hough_lines.png` |
+| Document source image | `docs/demo_outputs/07_document_perspective_source.png` |
+| Panorama result | `docs/demo_outputs/08_panorama_result.png` |
 
-The final oral demo should also show the real GUI, because the graphical
-interface is a mandatory part of the project.
+The most important part of the demo is still the live GUI, because the project
+brief requires a real desktop application.
 
-## 7. Project Management
+## 8. Testing
 
-This table follows the visible Git history and the merged feature branches.
+We used Pytest for the main processing modules. The tests check that functions
+return valid images, keep reasonable output sizes and do not crash on normal
+input. The current test suite covers:
 
-| Member | Main responsibility | Notes |
-| --- | --- | --- |
-| Zijie Huang | Base editor work, GUI workflow notes, image state explanation, README/report polish | Focus on Open/Save/Reset, preview state, Undo/Redo and user instructions |
-| Uncher | Crop & Straighten and GrabCut background removal work | Feature branches and commits under the Uncher account |
-| Rayene Khader | Flet UI modernization, transform tools and before/after comparison | Merged Flet UI and transformer tool branches |
-| BrendowDevX | Early package structure and core image-processing work | Early commits for main entry point, app structure, thresholding and histogram work |
+- Core processing functions
+- Scanner / document detection helpers
+- GrabCut segmentation helpers
 
-Suggested Git workflow:
+Final check command:
 
-- One branch per feature
-- Small commits for each operation or GUI screen
-- Pull request review before merging
-- README updated whenever setup or usage changes
+```bash
+python3 -m pytest
+```
 
-## 8. Known Limitations
+At the last check, all tests passed.
 
-- Panorama stitching depends on the input images. Photos need enough overlap and texture.
-- The affine transform assumes the three points are clicked in the requested order.
-- GrabCut works best when the user selects a rectangle that contains the subject
-  and some background.
-- The GUI is practical for a student project, but not as complete as a full
-  professional editor.
-- Very large images can still take time for heavy operations such as K-means.
+## 9. Project Management and Contributions
 
-## 9. Possible Improvements
+We used Git branches and pull requests to separate work. The table below follows
+the visible GitHub history.
 
-- Add a true Magic Wand / Flood Fill selection tool
-- Add a brush mask for inpainting
-- Add layers and blend modes
-- Export filter recipes
-- Package the application as a standalone executable
+| Member | Main work |
+| --- | --- |
+| Zijie Huang | GUI workflow notes, image state explanation, Open/Save/Reset, Undo/Redo documentation, README and report polishing |
+| Uncher | GrabCut background removal and related selection workflow |
+| Rayene Khader | Flet interface modernization, transform tools and before/after comparison |
+| BrendowDevX | Early project structure and core image-processing work |
 
-## 10. Conclusion
+During development, the project changed from a simpler interface to a Flet-based
+desktop GUI. We kept the OpenCV functions separate from the GUI so that the
+application stayed easier to test and explain.
 
-MyEditor covers all mandatory operations and adds several advanced features. The code is intentionally simple: each OpenCV operation is isolated in a small function, and the GUI calls those functions with values from menus, sliders or mouse selections. This makes the application usable for a demo and understandable for the individual code review.
+## 10. Limitations
+
+- Panorama stitching needs images with enough overlap and visible texture.
+- The affine tool depends on the user clicking the three points in the requested
+  order.
+- GrabCut works best when the rectangle contains the full subject and some
+  background.
+- Very large images can slow down heavy tools.
+- The editor is designed for a course project, so it does not include full
+  professional features such as layers.
+
+## 11. Possible Improvements
+
+- Add a true Magic Wand or Flood Fill selection tool.
+- Add inpainting with a brush mask.
+- Add layers and blend modes.
+- Add better export options.
+- Package the application as a standalone executable.
+
+## 12. Conclusion
+
+MyEditor meets the main project requirements: it is a desktop GUI image editor,
+it implements the six mandatory OpenCV features, and it adds three advanced
+features for the final demo. The code is kept simple on purpose. GUI code
+handles user interaction, and processing functions handle image operations. This
+keeps the project understandable for the presentation and for the individual
+code review.
