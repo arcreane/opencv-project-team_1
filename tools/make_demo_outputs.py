@@ -23,7 +23,7 @@ def main():
     write("03_clahe.png", processing.equalize_clahe(editor_image, 2.0, 8))
     write("04_canny.png", processing.canny_edges(editor_image, 70, 160, 3))
     write("05_cartoon.png", processing.cartoon_effect(editor_image))
-    write("06_orb_keypoints.png", processing.orb_keypoints(editor_image, 400))
+    write("06_hough_lines.png", processing.hough_lines(editor_image))
     write("07_document_perspective_source.png", document)
     write(
         "08_panorama_result.png",

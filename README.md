@@ -1,8 +1,9 @@
 # MyEditor
 
 MyEditor is a small desktop image editor built for the Multimedia Application
-final project. The GUI is written with **Flet** (Flutter under the hood) and the
-image-processing work is done with **OpenCV**.
+final project. The user opens an image, chooses an operation, previews the
+result, applies or cancels the change, and saves the edited image. The GUI is
+written with **Flet** and the image-processing work is done with **OpenCV**.
 
 ## Final Scope
 
@@ -16,18 +17,17 @@ Core features:
 - Crop & Straighten (Scan): auto document detection, draggable corners, B&W / Color / Gray output
 - Panorama stitching: load several overlapping images and build a panorama
 
-Selection:
+Selected advanced features:
 
+- Cartoon Effect: smooth colors and keep strong edges
+- Hough Lines Detection: detect and draw straight line segments
 - Remove Background (GrabCut): rectangle selection, brush touch-ups
   (erase background / restore subject) with undo/redo, transparent PNG cut-out
   or solid background colour
 
-Advanced features:
-
-- Gamma correction, unsharp mask, bilateral denoising
-- K-means color quantization
-- Cartoon effect, pencil sketch, vignette
-- ORB keypoints, Hough lines, connected components
+The interface also contains a few smaller filters from development, but the
+final demo focuses on the six required features and the three advanced features
+listed above.
 
 GUI features:
 
@@ -50,7 +50,7 @@ pip install -r requirements.txt
 ## Run
 
 ```bash
-python main.py
+python3 main.py
 ```
 
 This opens a native desktop window.
@@ -93,7 +93,7 @@ tests/             processing / scanner / segmentation tests
 ## Test
 
 ```bash
-python -m pytest
+python3 -m pytest
 ```
 
 The tests cover the processing, scanner and segmentation functions. The main
