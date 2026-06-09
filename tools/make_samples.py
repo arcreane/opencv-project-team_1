@@ -102,10 +102,37 @@ def make_panorama():
     save(image.crop((500, 0, 1400, height)), "panorama_right.png")
 
 
+def make_grabcut_subject():
+    # A clear subject (red mug) on a contrasting, textured background, so GrabCut
+    # has good colour separation to work with.
+    width, height = 720, 540
+    x = np.linspace(0, 1, width)
+    y = np.linspace(0, 1, height)
+    xx, yy = np.meshgrid(x, y)
+    red = (40 + 60 * yy).astype(np.uint8)
+    green = (120 + 90 * xx).astype(np.uint8)
+    blue = (70 + 50 * (1 - yy)).astype(np.uint8)
+    image = Image.fromarray(np.dstack([red, green, blue]), "RGB")
+
+    draw = ImageDraw.Draw(image)
+    rng = random.Random(21)
+    for _ in range(600):
+        px, py = rng.randrange(width), rng.randrange(height)
+        draw.point((px, py), fill=(rng.randrange(60, 200), rng.randrange(120, 220), rng.randrange(60, 160)))
+
+    draw.arc((440, 210, 545, 330), start=300, end=60, fill=(120, 20, 20), width=16)  # handle
+    draw.rounded_rectangle((250, 150, 470, 400), radius=30, fill=(210, 60, 55), outline=(120, 20, 20), width=5)
+    draw.ellipse((250, 128, 470, 198), fill=(225, 80, 70), outline=(120, 20, 20), width=5)  # rim
+    draw.text((300, 280), "MyEditor", fill=(255, 240, 230))
+
+    save(image, "grabcut_subject.png")
+
+
 def main():
     make_editor_test()
     make_document()
     make_panorama()
+    make_grabcut_subject()
 
 
 if __name__ == "__main__":
