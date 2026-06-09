@@ -2,23 +2,37 @@
 
 ## 1. Introduction
 
-MyEditor is a small desktop image editor inspired by tools such as GIMP. The goal was to build a real application, not only separate image-processing scripts. The user can load an image, preview operations with GUI controls, apply edits, undo or redo changes, and save the final result.
+MyEditor is a small desktop image editor inspired by tools such as GIMP. The
+goal was to build a real application, not only separate image-processing
+scripts. The user can load an image, preview operations with GUI controls, apply
+edits, undo or redo changes, reset the image and save the final result.
 
-The project uses Tkinter for the graphical interface and OpenCV for the image-processing algorithms. Tkinter keeps the interface simple to run on most machines, while OpenCV gives direct access to the required computer vision operations.
+The project uses Flet for the graphical interface and OpenCV for the
+image-processing algorithms. OpenCV images are stored as NumPy arrays in BGR
+format. The GUI converts them only when they need to be displayed.
 
 ## 2. Architecture
 
-The code is split into two main modules.
+The code is split into a few small modules.
 
 | File | Role |
 | --- | --- |
-| `myeditor/app.py` | Window layout, menus, dialogs, canvas display, mouse point selection, undo/redo |
-| `myeditor/processing.py` | OpenCV functions for filters, transforms, stitching and advanced features |
+| `myeditor/app.py` | Flet window, left tool panel, image display, live preview, mouse tools, status messages and undo/redo |
+| `myeditor/processing.py` | Main OpenCV functions for filters, transforms, stitching and advanced features |
+| `myeditor/scanner.py` | Document detection and crop/straighten helpers |
+| `myeditor/segmentation.py` | GrabCut background removal and mask helpers |
 | `main.py` | Starts the application |
 
-This separation makes the code easier to explain in the code review. GUI code only gathers parameters and displays images. Processing code receives an image array and returns a new image array.
+This separation makes the code easier to explain in the code review. GUI code
+collects parameters and displays images. Processing code receives an image array
+and returns a new image array.
 
-Images are stored as OpenCV BGR `numpy` arrays inside the application. For display, they are converted to RGB and shown on the Tkinter canvas with Pillow.
+The most important image states in the GUI are:
+
+- `original_image`: the first image loaded by the user, used by Reset
+- `image`: the current edited image
+- `preview_image`: a temporary result shown before Apply
+- `undo_stack` and `redo_stack`: previous image states for Undo and Redo
 
 ## 3. Core Features
 
@@ -58,25 +72,26 @@ The panorama tool loads several images and uses OpenCV's stitcher. If the stitch
 
 ## 4. Advanced Features
 
-The project implements more than the required two advanced features:
+The project focuses on three advanced features for the oral demo. These were
+chosen because the visual result is clear and the code can be explained in a
+short code review.
 
 | Feature | Technique |
 | --- | --- |
-| Gamma correction | Lookup table applied to all pixel values |
-| Unsharp mask | Gaussian blur plus weighted image difference |
-| Bilateral denoising | Edge-preserving smoothing |
-| K-means color quantization | Pixel clustering in BGR color space |
-| Cartoon effect | Bilateral filter plus adaptive edge mask |
-| Pencil sketch | Grayscale inversion, blur and division blend |
-| Vignette | Gaussian mask multiplied with the image |
-| ORB keypoints | OpenCV ORB detector and keypoint drawing |
-| Hough lines | Canny edges followed by probabilistic Hough transform |
-| Connected components | Otsu thresholding followed by component labeling |
-| Undo/redo | Stack of previous image states |
+| Cartoon Effect | Bilateral filtering for smooth colors, then adaptive thresholding for edges |
+| Hough Lines Detection | Canny edges followed by probabilistic Hough transform |
+| Remove Background | GrabCut initialized by a rectangle, then refined with brush strokes |
+
+Undo and Redo are kept in the GUI section because they are state management
+features, not OpenCV algorithms.
 
 ## 5. GUI and User Experience
 
-The application opens into a real desktop window with menus, toolbar buttons, dialogs, sliders and a canvas. Slider-based operations show a live preview. For large images, the preview image is downscaled inside the dialog so sliders stay responsive; when the user clicks Apply, the operation is applied to the full-resolution image.
+The application opens into a real desktop window with a top bar, a left tool
+panel, a main image display and a right-side parameter panel. Slider-based
+operations show a live preview. For large images, the preview is computed on a
+downscaled copy so the sliders stay responsive; when the user clicks Apply, the
+operation is applied to the full-resolution image.
 
 Mouse interaction is used for geometric transforms. The selected points are drawn on the canvas so the user can see the current selection before the transform is applied.
 
@@ -91,22 +106,23 @@ The `samples/` folder contains images used during development and demo preparati
 | CLAHE contrast enhancement | `docs/demo_outputs/03_clahe.png` |
 | Canny edge detection | `docs/demo_outputs/04_canny.png` |
 | Cartoon effect | `docs/demo_outputs/05_cartoon.png` |
-| ORB keypoints | `docs/demo_outputs/06_orb_keypoints.png` |
+| Hough line detection | `docs/demo_outputs/06_hough_lines.png` |
 | Tilted document sample | `docs/demo_outputs/07_document_perspective_source.png` |
 | Panorama stitching result | `docs/demo_outputs/08_panorama_result.png` |
 
-For the final PDF report, add screenshots of the actual GUI while showing two or three of these operations.
+The final oral demo should also show the real GUI, because the graphical
+interface is a mandatory part of the project.
 
 ## 7. Project Management
 
-This table should match the GitHub commit history before submission. Names that are not known yet are kept as placeholders.
+This table follows the visible Git history and the merged feature branches.
 
 | Member | Main responsibility | Notes |
 | --- | --- | --- |
-| Zijie Huang | GUI workflow, image state management, Open/Save/Reset, Undo/Redo, user instructions | Responsible for the main user flow and documentation for running the app |
-| Member 2 | Core OpenCV operations |  |
-| Member 3 | Advanced features and samples |  |
-| Member 4 | Report, testing, packaging |  |
+| Zijie Huang | Base editor work, GUI workflow notes, image state explanation, README/report polish | Focus on Open/Save/Reset, preview state, Undo/Redo and user instructions |
+| Uncher | Crop & Straighten and GrabCut background removal work | Feature branches and commits under the Uncher account |
+| Rayene Khader | Flet UI modernization, transform tools and before/after comparison | Merged Flet UI and transformer tool branches |
+| BrendowDevX | Early package structure and core image-processing work | Early commits for main entry point, app structure, thresholding and histogram work |
 
 Suggested Git workflow:
 
@@ -119,12 +135,15 @@ Suggested Git workflow:
 
 - Panorama stitching depends on the input images. Photos need enough overlap and texture.
 - The affine transform assumes the three points are clicked in the requested order.
-- The GUI is practical, but not as polished as a full Qt application.
+- GrabCut works best when the user selects a rectangle that contains the subject
+  and some background.
+- The GUI is practical for a student project, but not as complete as a full
+  professional editor.
 - Very large images can still take time for heavy operations such as K-means.
 
 ## 9. Possible Improvements
 
-- Add crop and rotate tools
+- Add a true Magic Wand / Flood Fill selection tool
 - Add a brush mask for inpainting
 - Add layers and blend modes
 - Export filter recipes
